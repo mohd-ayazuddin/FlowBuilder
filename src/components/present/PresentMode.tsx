@@ -6,6 +6,8 @@ import { useAppStore } from '@/lib/store';
 import { FlowNodeData } from '@/lib/types';
 import { NODE_CONFIG } from '@/components/flow/NodeConfig';
 import { NodeIcon } from '@/components/flow/NodeIcon';
+import { NodeContextMenu } from '@/components/flow/NodeContextMenu';
+import { useContextMenu } from '@/hooks/useContextMenu';
 import { Button } from '@/components/ui/button';
 import {
   X,
@@ -23,11 +25,13 @@ function ProgressTracker({
   steps,
   currentStepIndex,
   onStepClick,
+  onStepContextMenu,
   completingStep,
 }: {
   steps: ReturnType<typeof useAppStore.getState>['nodes'];
   currentStepIndex: number;
   onStepClick: (idx: number) => void;
+  onStepContextMenu: (e: React.MouseEvent, nodeId: string) => void;
   completingStep: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -104,6 +108,11 @@ function ProgressTracker({
                   {/* Step Pill */}
                   <button
                     onClick={() => onStepClick(idx)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onStepContextMenu(e, step.id);
+                    }}
                     className={`
                       relative flex items-center gap-2 px-3 lg:px-4 py-2 lg:py-2.5 rounded-xl
                       font-medium transition-all duration-400 ease-out
@@ -182,12 +191,14 @@ function HeroStepCard({
   totalSteps,
   completingStep,
   allNodes,
+  onContextMenu,
 }: {
   step: { id: string; data: FlowNodeData };
   stepIndex: number;
   totalSteps: number;
   completingStep: boolean;
   allNodes: ReturnType<typeof useAppStore.getState>['nodes'];
+  onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const data = step.data as FlowNodeData;
   const config = NODE_CONFIG[data.nodeType];
@@ -198,6 +209,7 @@ function HeroStepCard({
       {/* Floating card with glassmorphism */}
       <motion.div
         layout
+        onContextMenu={onContextMenu}
         className={`
           relative rounded-3xl overflow-hidden
           border transition-all duration-700 ease-out
@@ -428,6 +440,9 @@ export function PresentMode() {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
 
+  // Context menu for presentation mode
+  const presentContextMenu = useContextMenu();
+
   const steps = getOrderedSteps();
   const currentStep = steps[currentStepIndex];
   const completedCount = nodes.filter(
@@ -544,6 +559,7 @@ export function PresentMode() {
           steps={steps}
           currentStepIndex={currentStepIndex}
           onStepClick={setCurrentStepIndex}
+          onStepContextMenu={presentContextMenu.open}
           completingStep={completingStep}
         />
       </div>
@@ -569,6 +585,10 @@ export function PresentMode() {
               totalSteps={totalCount}
               completingStep={completingStep}
               allNodes={nodes}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                presentContextMenu.open(e, currentStep.id);
+              }}
             />
           </motion.div>
         </AnimatePresence>
@@ -691,6 +711,16 @@ export function PresentMode() {
       >
         <X className="w-4.5 h-4.5" />
       </button>
+
+      {/* ── Context Menu (Presentation Mode) ── */}
+      <NodeContextMenu
+        isOpen={presentContextMenu.isOpen}
+        x={presentContextMenu.x}
+        y={presentContextMenu.y}
+        nodeId={presentContextMenu.nodeId}
+        menuRef={presentContextMenu.menuRef}
+        onClose={presentContextMenu.close}
+      />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Lock, Check } from 'lucide-react';
@@ -64,19 +64,85 @@ const statusLabels: Record<StepStatus, string> = {
   blocked: 'Blocked',
 };
 
-function CustomNodeComponent({ data, selected }: NodeProps) {
+/* Global callbacks — set by FlowCanvas so the context menu can be
+   triggered from inside React Flow nodes without prop-drilling. */
+let _onNodeContextMenu: ((e: React.MouseEvent, nodeId: string) => void) | null = null;
+let _onNodeTouchStart: ((e: React.TouchEvent, nodeId: string) => void) | null = null;
+let _onNodeTouchMove: ((e: React.TouchEvent) => void) | null = null;
+let _onNodeTouchEnd: ((e: React.TouchEvent) => void) | null = null;
+
+export function setNodeContextMenuHandler(
+  handler: (e: React.MouseEvent, nodeId: string) => void
+) {
+  _onNodeContextMenu = handler;
+}
+
+export function setNodeTouchHandlers(handlers: {
+  onTouchStart: (e: React.TouchEvent, nodeId: string) => void;
+  onTouchMove: (e: React.TouchEvent) => void;
+  onTouchEnd: (e: React.TouchEvent) => void;
+}) {
+  _onNodeTouchStart = handlers.onTouchStart;
+  _onNodeTouchMove = handlers.onTouchMove;
+  _onNodeTouchEnd = handlers.onTouchEnd;
+}
+
+function CustomNodeComponent({ data, selected, id }: NodeProps) {
   const nodeData = data as FlowNodeData;
   const status = nodeData.status || 'pending';
   const styles = statusStyles[status];
   const nodeType = nodeData.nodeType;
   const config = NODE_CONFIG[nodeType];
   const color = config?.color || nodeData.color;
+  const isLocked = nodeData.isLocked ?? false;
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (_onNodeContextMenu) {
+        _onNodeContextMenu(e, id);
+      }
+    },
+    [id]
+  );
+
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      if (_onNodeTouchStart) {
+        _onNodeTouchStart(e, id);
+      }
+    },
+    [id]
+  );
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      if (_onNodeTouchMove) {
+        _onNodeTouchMove(e);
+      }
+    },
+    []
+  );
+
+  const handleTouchEnd = useCallback(
+    (e: React.TouchEvent) => {
+      if (_onNodeTouchEnd) {
+        _onNodeTouchEnd(e);
+      }
+    },
+    []
+  );
 
   return (
     <motion.div
-      whileHover={{ scale: 1.04, y: -3 }}
+      whileHover={!isLocked ? { scale: 1.04, y: -3 } : {}}
       transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-      className={`${styles.opacity}`}
+      className={`${styles.opacity} ${isLocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+      onContextMenu={handleContextMenu}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
     >
       <div
         className={`
@@ -85,6 +151,7 @@ function CustomNodeComponent({ data, selected }: NodeProps) {
           ${styles.container}
           ${styles.glow}
           ${selected ? 'ring-2 ring-emerald-500/70 ring-offset-2 dark:ring-offset-gray-900 shadow-lg shadow-emerald-500/10' : ''}
+          ${isLocked ? 'ring-2 ring-gray-400/40 dark:ring-gray-500/30 ring-offset-1 dark:ring-offset-gray-900' : ''}
         `}
       >
         {/* Top Handle */}
@@ -162,6 +229,9 @@ function CustomNodeComponent({ data, selected }: NodeProps) {
                 <Check className="w-2.5 h-2.5" />
               )}
               {statusLabels[status]}
+              {isLocked && (
+                <Lock className="w-2.5 h-2.5 ml-0.5 text-gray-400" />
+              )}
             </span>
           </motion.div>
         </AnimatePresence>
@@ -170,6 +240,13 @@ function CustomNodeComponent({ data, selected }: NodeProps) {
         {nodeData.isRequired && status !== 'completed' && (
           <div className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-rose-500 border-2 border-white dark:border-gray-800 flex items-center justify-center">
             <span className="text-white text-[6px] font-bold">!</span>
+          </div>
+        )}
+
+        {/* Lock indicator */}
+        {isLocked && (
+          <div className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-gray-500 dark:bg-gray-600 border-2 border-white dark:border-gray-900 flex items-center justify-center shadow-sm">
+            <Lock className="w-2.5 h-2.5 text-white" />
           </div>
         )}
 
@@ -200,6 +277,11 @@ function CustomNodeComponent({ data, selected }: NodeProps) {
           id="right"
           className="!w-2 !h-2 !bg-gray-300 dark:!bg-gray-500 !border-2 !border-white dark:!border-gray-800 !rounded-full"
         />
+
+        {/* Context menu hint on hover — small "right-click" indicator */}
+        <div className="absolute bottom-1 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+          <span className="text-[8px] text-gray-400 dark:text-gray-500">⋮</span>
+        </div>
       </div>
     </motion.div>
   );

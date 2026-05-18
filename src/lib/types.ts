@@ -25,6 +25,7 @@ export interface FlowNodeData {
   isRequired: boolean;
   order: number;
   dependencies: string[];
+  isLocked?: boolean;
 }
 
 export interface Template {

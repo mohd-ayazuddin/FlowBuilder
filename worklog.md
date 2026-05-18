@@ -63,3 +63,41 @@ Built a comprehensive canvas-based SaaS application for live client demos, train
 
 ### Lint Status
 All lint errors resolved. Final `bun run lint` passes cleanly.
+
+---
+
+Task ID: 2
+Agent: Main Agent
+Task: Add professional right-click context menu system for workflow nodes
+
+Work Log:
+- Updated FlowNodeData type to add `isLocked?: boolean` field
+- Updated Zustand store with `toggleNodeLock(id)` and `resetNode(id)` actions
+- Created `useContextMenu` hook with smart edge repositioning, click-outside, ESC, and long-press (touch) support
+- Created `NodeContextMenu` component with:
+  - 9 menu items: Mark Completed, Mark In Progress, Mark Pending, Mark Blocked, Reset Step, Lock/Unlock, Focus Step, Edit Details, Delete Node
+  - Glassmorphism styling with backdrop blur
+  - Framer Motion spring entrance/exit animations
+  - Keyboard navigation (Arrow keys, Enter, Escape)
+  - Status indicator dots and current status ring
+  - Keyboard shortcut hints
+  - Danger styling for delete action
+  - Disabled states for locked nodes
+  - Node header with label and current status
+  - Portal rendering for z-index safety
+- Updated `CustomNode` to support right-click and long-press via global callbacks
+- Updated `FlowCanvas` to integrate context menu with Focus and Edit actions
+- Updated `PresentMode` to support right-click on step pills and hero card
+- Added CSS keyframe animations for status flash effects
+- Added touch device fallback with 500ms long-press to open context menu
+
+Stage Summary:
+- Context menu works in both Build Mode (right-click on canvas nodes) and Present Mode (right-click on step pills and hero card)
+- Smart edge repositioning prevents menu from going off-screen
+- Keyboard navigation fully functional within menu
+- Touch devices supported via long-press
+- Locked nodes are protected from status changes and deletion
+- Focus Step smoothly animates the camera to the target node
+- Edit Details opens the right sidebar properties panel
+- All status changes instantly update node visuals, connector lines, and progress tracker
+- Build compiles successfully with zero errors

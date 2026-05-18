@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useMemo, DragEvent, useState } from 'react';
+import { useCallback, useRef, useMemo, DragEvent, useState, useEffect } from 'react';
 import ReactFlow, {
   Background,
   Controls,
@@ -13,9 +13,12 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { CustomNode } from './CustomNode';
 import { CustomEdge } from './CustomEdge';
+import { NodeContextMenu } from './NodeContextMenu';
+import { useContextMenu } from '@/hooks/useContextMenu';
 import { useAppStore } from '@/lib/store';
 import { NodeType } from '@/lib/types';
 import { NODE_CONFIG } from './NodeConfig';
+import { setNodeContextMenuHandler, setNodeTouchHandlers } from './CustomNode';
 
 const nodeTypes: NodeTypes = {
   customNode: CustomNode,
@@ -27,7 +30,7 @@ const edgeTypes: EdgeTypes = {
 
 function FlowCanvasInner() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, fitView, setViewport } = useReactFlow();
 
   const nodes = useAppStore((s) => s.nodes);
   const edges = useAppStore((s) => s.edges);
@@ -37,6 +40,37 @@ function FlowCanvasInner() {
   const addNode = useAppStore((s) => s.addNode);
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const setSelectedNodeId = useAppStore((s) => s.setSelectedNodeId);
+  const toggleRightSidebar = useAppStore((s) => s.toggleRightSidebar);
+  const rightSidebarOpen = useAppStore((s) => s.rightSidebarOpen);
+
+  // Context menu state
+  const contextMenu = useContextMenu();
+
+  // Register the context menu handler so CustomNode can call it
+  useEffect(() => {
+    setNodeContextMenuHandler((e, nodeId) => {
+      contextMenu.open(e, nodeId);
+    });
+    setNodeTouchHandlers({
+      onTouchStart: (e, nodeId) => {
+        contextMenu.handleTouchStart(e, nodeId);
+      },
+      onTouchMove: (e) => {
+        contextMenu.handleTouchMove();
+      },
+      onTouchEnd: (e) => {
+        contextMenu.handleTouchEnd();
+      },
+    });
+    return () => {
+      setNodeContextMenuHandler(null as any);
+      setNodeTouchHandlers({
+        onTouchStart: () => {},
+        onTouchMove: () => {},
+        onTouchEnd: () => {},
+      });
+    };
+  }, [contextMenu.open, contextMenu.handleTouchStart, contextMenu.handleTouchMove, contextMenu.handleTouchEnd]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: { id: string }) => {
@@ -47,7 +81,8 @@ function FlowCanvasInner() {
 
   const onPaneClick = useCallback(() => {
     setSelectedNodeId(null);
-  }, [setSelectedNodeId]);
+    contextMenu.close();
+  }, [setSelectedNodeId, contextMenu]);
 
   const onDragOver = useCallback((event: DragEvent) => {
     event.preventDefault();
@@ -69,6 +104,36 @@ function FlowCanvasInner() {
       addNode(nodeType, position);
     },
     [screenToFlowPosition, addNode]
+  );
+
+  // Focus node — smoothly zoom/focus camera to the node
+  const handleFocusNode = useCallback(
+    (nodeId: string) => {
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+
+      // Animate to the node position with a nice zoom
+      setViewport(
+        {
+          x: window.innerWidth / 2 - node.position.x - 100,
+          y: window.innerHeight / 2 - node.position.y - 50,
+          zoom: 1.2,
+        },
+        { duration: 600 }
+      );
+    },
+    [nodes, setViewport]
+  );
+
+  // Edit details — open right sidebar
+  const handleEditDetails = useCallback(
+    (nodeId: string) => {
+      setSelectedNodeId(nodeId);
+      if (!rightSidebarOpen) {
+        toggleRightSidebar();
+      }
+    },
+    [setSelectedNodeId, rightSidebarOpen, toggleRightSidebar]
   );
 
   // Determine edge status based on connected node statuses
@@ -100,7 +165,7 @@ function FlowCanvasInner() {
     if (status === 'completed') return '#10b981';
     if (status === 'active') return '#f59e0b';
     if (status === 'blocked') return '#f43f5e';
-    
+
     const type = node.data?.nodeType;
     if (type && NODE_CONFIG[type as NodeType]) {
       return NODE_CONFIG[type as NodeType].color;
@@ -133,6 +198,7 @@ function FlowCanvasInner() {
         proOptions={{ hideAttribution: true }}
         className="bg-gray-50 dark:bg-gray-950"
         selectionOnDrag={false}
+        onContextMenu={(e) => e.preventDefault()}
       >
         <Background
           gap={24}
@@ -153,6 +219,18 @@ function FlowCanvasInner() {
           zoomable
         />
       </ReactFlow>
+
+      {/* Right-click context menu */}
+      <NodeContextMenu
+        isOpen={contextMenu.isOpen}
+        x={contextMenu.x}
+        y={contextMenu.y}
+        nodeId={contextMenu.nodeId}
+        menuRef={contextMenu.menuRef}
+        onClose={contextMenu.close}
+        onEditDetails={handleEditDetails}
+        onFocusNode={handleFocusNode}
+      />
     </div>
   );
 }

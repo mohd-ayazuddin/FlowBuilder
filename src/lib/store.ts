@@ -28,6 +28,8 @@ interface AppState {
   removeNode: (id: string) => void;
   updateNodeData: (id: string, data: Partial<FlowNodeData>) => void;
   updateNodeStatus: (id: string, status: StepStatus) => void;
+  toggleNodeLock: (id: string) => void;
+  resetNode: (id: string) => void;
 
   // Present mode
   currentStepIndex: number;
@@ -191,6 +193,34 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ nodes });
     // Re-evaluate blocked nodes
     reevaluateBlockedNodes(get, set);
+  },
+
+  toggleNodeLock: (id) => {
+    const nodes = get().nodes.map((n) => {
+      if (n.id === id) {
+        const data = n.data as FlowNodeData;
+        return {
+          ...n,
+          data: { ...data, isLocked: !data.isLocked },
+        };
+      }
+      return n;
+    });
+    set({ nodes });
+  },
+
+  resetNode: (id) => {
+    const nodes = get().nodes.map((n) => {
+      if (n.id === id) {
+        const data = n.data as FlowNodeData;
+        return {
+          ...n,
+          data: { ...data, status: 'pending' as StepStatus, isLocked: false },
+        };
+      }
+      return n;
+    });
+    set({ nodes });
   },
 
   // Present mode
