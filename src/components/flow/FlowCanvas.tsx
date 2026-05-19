@@ -174,7 +174,7 @@ function FlowCanvasInner() {
   }, []);
 
   return (
-    <div ref={reactFlowWrapper} className="w-full h-full">
+    <div ref={reactFlowWrapper} className="w-full h-full relative">
       <ReactFlow
         nodes={nodes}
         edges={edgesWithStatus}
@@ -219,6 +219,27 @@ function FlowCanvasInner() {
           zoomable
         />
       </ReactFlow>
+
+      {/* Empty state overlay */}
+      {nodes.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+          <div className="text-center space-y-3 px-6">
+            <div className="w-16 h-16 rounded-2xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 flex items-center justify-center mx-auto shadow-sm">
+              <svg className="w-7 h-7 text-gray-300 dark:text-gray-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="6" cy="6" r="3" />
+                <circle cx="18" cy="6" r="3" />
+                <circle cx="12" cy="18" r="3" />
+                <path d="M6 9v1a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V9" />
+                <path d="M12 15v-3" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-400 dark:text-gray-500">Drag a step from the sidebar to get started</p>
+              <p className="text-xs text-gray-300 dark:text-gray-600 mt-1">or choose a template from the Templates tab</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Right-click context menu */}
       <NodeContextMenu

@@ -1,7 +1,9 @@
 'use client';
 
 import { useAppStore } from '@/lib/store';
+import { useAuth } from '@/components/auth/AuthProvider';
 import { useTheme } from 'next-themes';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import {
@@ -9,6 +11,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import {
   Play,
@@ -25,7 +28,17 @@ import {
   FileText,
   ImageIcon,
   MonitorPlay,
+  ArrowLeft,
+  Cloud,
+  CloudOff,
+  Loader2,
+  LogOut,
+  LayoutDashboard,
+  FileJson,
 } from 'lucide-react';
+import { useCallback } from 'react';
+import { toPng } from 'html-to-image';
+import jsPDF from 'jspdf';
 
 // Custom Workflow icon
 function Workflow({ className }: { className?: string }) {
@@ -51,6 +64,8 @@ function Workflow({ className }: { className?: string }) {
 
 export function TopBar() {
   const { theme, setTheme } = useTheme();
+  const router = useRouter();
+  const { user, signOut } = useAuth();
   const appMode = useAppStore((s) => s.appMode);
   const setAppMode = useAppStore((s) => s.setAppMode);
   const undo = useAppStore((s) => s.undo);
@@ -59,27 +74,105 @@ export function TopBar() {
   const canRedo = useAppStore((s) => s.canRedo);
   const zoomLevel = useAppStore((s) => s.zoomLevel);
   const setZoomLevel = useAppStore((s) => s.setZoomLevel);
+  const saveFlow = useAppStore((s) => s.saveFlow);
+  const saveStatus = useAppStore((s) => s.saveStatus);
+  const currentFlowId = useAppStore((s) => s.currentFlowId);
+  const flowTitle = useAppStore((s) => s.flowTitle);
+  const setFlowTitle = useAppStore((s) => s.setFlowTitle);
+  const lastSavedAt = useAppStore((s) => s.lastSavedAt);
+
+  const handleSave = useCallback(async () => {
+    await saveFlow();
+  }, [saveFlow]);
+
+  // Export as PNG
+  const exportAsPNG = useCallback(async () => {
+    const el = document.querySelector('.react-flow') as HTMLElement;
+    if (!el) return;
+    try {
+      const dataUrl = await toPng(el, {
+        backgroundColor: theme === 'dark' ? '#030712' : '#f9fafb',
+        quality: 1,
+        pixelRatio: 2,
+      });
+      const link = document.createElement('a');
+      link.download = `${flowTitle || 'flow'}.png`;
+      link.href = dataUrl;
+      link.click();
+    } catch (err) {
+      console.error('Export PNG error:', err);
+    }
+  }, [theme, flowTitle]);
+
+  // Export as PDF
+  const exportAsPDF = useCallback(async () => {
+    const el = document.querySelector('.react-flow') as HTMLElement;
+    if (!el) return;
+    try {
+      const dataUrl = await toPng(el, {
+        backgroundColor: theme === 'dark' ? '#030712' : '#f9fafb',
+        quality: 1,
+        pixelRatio: 2,
+      });
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [1920, 1080] });
+      pdf.addImage(dataUrl, 'PNG', 0, 0, 1920, 1080);
+      pdf.save(`${flowTitle || 'flow'}.pdf`);
+    } catch (err) {
+      console.error('Export PDF error:', err);
+    }
+  }, [theme, flowTitle]);
+
+  // Export as JSON
+  const exportAsJSON = useCallback(() => {
+    const nodes = useAppStore.getState().nodes;
+    const edges = useAppStore.getState().edges;
+    const data = {
+      title: flowTitle,
+      nodes,
+      edges,
+      exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.download = `${flowTitle || 'flow'}.json`;
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }, [flowTitle]);
 
   if (appMode === 'present') return null;
 
   return (
     <div className="h-14 flex items-center gap-2 px-4 border-b border-gray-200/80 dark:border-gray-800/80 bg-white/90 dark:bg-gray-900/90 backdrop-blur-xl">
-      {/* Logo / App Name */}
-      <div className="flex items-center gap-2.5 mr-1">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-sm shadow-emerald-500/20">
-          <Workflow className="w-4.5 h-4.5 text-white" />
-        </div>
-        <div className="hidden sm:flex flex-col">
-          <span className="font-bold text-sm text-gray-900 dark:text-gray-100 leading-tight">
-            FlowBuilder
-          </span>
-          <span className="text-[9px] text-gray-400 dark:text-gray-500 leading-tight">
-            Demo Flow Builder
-          </span>
+      {/* Back to Dashboard */}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => router.push('/dashboard')}
+        className="h-7 px-2 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+      >
+        <ArrowLeft className="w-3.5 h-3.5 mr-1" />
+        <span className="hidden sm:inline">Dashboard</span>
+      </Button>
+
+      <Separator orientation="vertical" className="h-6 mx-0.5" />
+
+      {/* Logo */}
+      <div className="flex items-center gap-2 mr-1">
+        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-sm shadow-emerald-500/20">
+          <Workflow className="w-3.5 h-3.5 text-white" />
         </div>
       </div>
 
-      <Separator orientation="vertical" className="h-6 mx-1" />
+      {/* Flow Title (editable) */}
+      <input
+        value={flowTitle}
+        onChange={(e) => setFlowTitle(e.target.value)}
+        className="bg-transparent border-none text-sm font-semibold text-gray-900 dark:text-gray-100 outline-none focus:ring-0 max-w-[200px] hover:bg-gray-100 dark:hover:bg-gray-800 px-2 py-1 rounded-lg transition-colors"
+        placeholder="Untitled Flow"
+      />
+
+      <Separator orientation="vertical" className="h-6 mx-0.5" />
 
       {/* Build/Present toggle */}
       <div className="flex items-center bg-gray-100 dark:bg-gray-800/80 rounded-lg p-0.5">
@@ -111,12 +204,37 @@ export function TopBar() {
         </Button>
       </div>
 
-      <Separator orientation="vertical" className="h-6 mx-1" />
+      <Separator orientation="vertical" className="h-6 mx-0.5" />
 
-      {/* Save */}
-      <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
-        <Save className="w-3.5 h-3.5 mr-1.5" />
-        <span className="hidden sm:inline">Save</span>
+      {/* Save Button with Status */}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={handleSave}
+        disabled={saveStatus === 'saving'}
+        className="h-7 px-2 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+      >
+        {saveStatus === 'saving' ? (
+          <>
+            <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+            <span className="hidden sm:inline">Saving...</span>
+          </>
+        ) : saveStatus === 'saved' ? (
+          <>
+            <Cloud className="w-3.5 h-3.5 mr-1.5 text-emerald-500" />
+            <span className="hidden sm:inline text-emerald-600 dark:text-emerald-400">Saved</span>
+          </>
+        ) : saveStatus === 'error' ? (
+          <>
+            <CloudOff className="w-3.5 h-3.5 mr-1.5 text-rose-500" />
+            <span className="hidden sm:inline text-rose-600 dark:text-rose-400">Sync failed</span>
+          </>
+        ) : (
+          <>
+            <Save className="w-3.5 h-3.5 mr-1.5" />
+            <span className="hidden sm:inline">Save</span>
+          </>
+        )}
       </Button>
 
       {/* Undo / Redo */}
@@ -188,22 +306,22 @@ export function TopBar() {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-48">
-          <DropdownMenuItem className="text-xs">
-            <FileText className="w-4 h-4 mr-2" />
-            Export as PDF
-          </DropdownMenuItem>
-          <DropdownMenuItem className="text-xs">
+          <DropdownMenuItem className="text-xs" onClick={exportAsPNG}>
             <ImageIcon className="w-4 h-4 mr-2" />
             Export as PNG
           </DropdownMenuItem>
-          <DropdownMenuItem className="text-xs">
-            <MonitorPlay className="w-4 h-4 mr-2" />
-            Export as PPT
+          <DropdownMenuItem className="text-xs" onClick={exportAsPDF}>
+            <FileText className="w-4 h-4 mr-2" />
+            Export as PDF
+          </DropdownMenuItem>
+          <DropdownMenuItem className="text-xs" onClick={exportAsJSON}>
+            <FileJson className="w-4 h-4 mr-2" />
+            Export as JSON
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <Separator orientation="vertical" className="h-6 mx-1" />
+      <Separator orientation="vertical" className="h-6 mx-0.5" />
 
       {/* Present Button */}
       <Button
@@ -213,6 +331,29 @@ export function TopBar() {
         <Play className="w-3.5 h-3.5 mr-1.5" />
         Present
       </Button>
+
+      {/* User Menu */}
+      {user && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className="ml-1 w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-white text-[11px] font-bold hover:scale-105 transition-transform">
+              {user.email?.[0]?.toUpperCase() || 'U'}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuItem className="text-xs text-gray-500" disabled>
+              {user.email}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => router.push('/dashboard')} className="text-xs">
+              <LayoutDashboard className="w-4 h-4 mr-2" /> Dashboard
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={signOut} className="text-xs text-rose-600 dark:text-rose-400">
+              <LogOut className="w-4 h-4 mr-2" /> Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </div>
   );
 }

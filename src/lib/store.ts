@@ -4,11 +4,29 @@ import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges, NodeChange, EdgeChange, Connection, addEdge, Node, Edge } from 'reactflow';
 import { FlowNodeData, NodeType, StepStatus, AppMode, Template } from './types';
 import { NODE_TYPE_CONFIG, TEMPLATES } from './constants';
+import { SaveStatus } from './supabase/types';
+import { createClient } from './supabase/client';
 
 interface AppState {
   // Mode
   appMode: AppMode;
   setAppMode: (mode: AppMode) => void;
+
+  // Flow identity
+  currentFlowId: string | null;
+  flowTitle: string;
+  flowDescription: string;
+  setFlowTitle: (title: string) => void;
+  setFlowDescription: (desc: string) => void;
+  setCurrentFlowId: (id: string | null) => void;
+
+  // Save state
+  saveStatus: SaveStatus;
+  setSaveStatus: (status: SaveStatus) => void;
+  lastSavedAt: Date | null;
+  setLastSavedAt: (date: Date | null) => void;
+  isLoaded: boolean;
+  setIsLoaded: (loaded: boolean) => void;
 
   // Flow
   nodes: Node[];
@@ -62,47 +80,59 @@ interface AppState {
 
   // Templates
   loadTemplate: (template: Template) => void;
-}
 
-const customerWorkflow = TEMPLATES[0];
+  // Supabase operations
+  saveFlow: () => Promise<void>;
+  loadFlow: (flowId: string) => Promise<void>;
+  createNewFlow: (title?: string) => Promise<string | null>;
+  deleteFlow: (flowId: string) => Promise<void>;
+  duplicateFlow: (flowId: string) => Promise<string | null>;
+  resetToEmpty: () => void;
+}
 
 const generateId = () => `node-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-const initialNodes: Node[] = customerWorkflow.nodes.map((n) => ({
-  id: n.id,
-  type: n.type,
-  position: n.position,
-  data: { ...n.data },
-}));
-
-const initialEdges: Edge[] = customerWorkflow.edges.map((e) => ({
-  id: e.id,
-  source: e.source,
-  target: e.target,
-  type: 'customEdge',
-}));
-
-const initialHistory = [{ nodes: initialNodes, edges: initialEdges }];
+const emptyNodes: Node[] = [];
+const emptyEdges: Edge[] = [];
+const emptyHistory = [{ nodes: emptyNodes, edges: emptyEdges }];
 
 export const useAppStore = create<AppState>((set, get) => ({
   // Mode
   appMode: 'build',
   setAppMode: (mode) => set({ appMode: mode }),
 
+  // Flow identity
+  currentFlowId: null,
+  flowTitle: 'Untitled Flow',
+  flowDescription: '',
+  setFlowTitle: (title) => set((s) => ({ flowTitle: title, saveStatus: s.isLoaded && s.saveStatus === 'saved' ? 'idle' : s.saveStatus })),
+  setFlowDescription: (desc) => set({ flowDescription: desc }),
+  setCurrentFlowId: (id) => set({ currentFlowId: id }),
+
+  // Save state
+  saveStatus: 'idle',
+  setSaveStatus: (status) => set({ saveStatus: status }),
+  lastSavedAt: null,
+  setLastSavedAt: (date) => set({ lastSavedAt: date }),
+  isLoaded: false,
+  setIsLoaded: (loaded) => set({ isLoaded: loaded }),
+
   // Flow
-  nodes: initialNodes,
-  edges: initialEdges,
+  nodes: emptyNodes,
+  edges: emptyEdges,
   setNodes: (nodes) => {
-    set({ nodes });
+    set((s) => ({ nodes, saveStatus: s.isLoaded && s.saveStatus === 'saved' ? 'idle' : s.saveStatus }));
   },
   setEdges: (edges) => {
-    set({ edges });
+    set((s) => ({ edges, saveStatus: s.isLoaded && s.saveStatus === 'saved' ? 'idle' : s.saveStatus }));
   },
   onNodesChange: (changes) => {
-    set({ nodes: applyNodeChanges(changes, get().nodes) });
+    const s = get();
+    set({ nodes: applyNodeChanges(changes, s.nodes), saveStatus: s.isLoaded && s.saveStatus === 'saved' ? 'idle' : s.saveStatus });
   },
   onEdgesChange: (changes) => {
-    set({ edges: applyEdgeChanges(changes, get().edges) });
+    const s = get();
+    set({ edges: applyEdgeChanges(changes, s.edges), saveStatus: s.isLoaded && s.saveStatus === 'saved' ? 'idle' : s.saveStatus });
   },
   onConnect: (connection) => {
     const newEdges = addEdge(
@@ -344,7 +374,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   // History
-  history: initialHistory,
+  history: emptyHistory,
   historyIndex: 0,
   pushHistory: () => {
     const { nodes, edges, historyIndex, history } = get();
@@ -396,6 +426,221 @@ export const useAppStore = create<AppState>((set, get) => ({
       canUndo: false,
       canRedo: false,
     });
+  },
+
+  // Reset to empty canvas
+  resetToEmpty: () => {
+    set({
+      nodes: emptyNodes,
+      edges: emptyEdges,
+      selectedNodeId: null,
+      currentStepIndex: 0,
+      currentFlowId: null,
+      flowTitle: 'Untitled Flow',
+      flowDescription: '',
+      saveStatus: 'idle',
+      lastSavedAt: null,
+      isLoaded: false,
+      history: emptyHistory,
+      historyIndex: 0,
+      canUndo: false,
+      canRedo: false,
+    });
+  },
+
+  // ──── Supabase Operations ────
+
+  saveFlow: async () => {
+    const { currentFlowId, nodes, edges, flowTitle, flowDescription } = get();
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    set({ saveStatus: 'saving' });
+
+    const canvasData = {
+      nodes: JSON.parse(JSON.stringify(nodes)),
+      edges: JSON.parse(JSON.stringify(edges)),
+    };
+
+    try {
+      if (currentFlowId) {
+        // Update existing flow
+        const { error } = await supabase
+          .from('flows')
+          .update({
+            title: flowTitle,
+            description: flowDescription,
+            canvas_data: canvasData,
+            node_count: nodes.length,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', currentFlowId)
+          .eq('user_id', user.id);
+
+        if (error) throw error;
+      } else {
+        // Create new flow
+        const { data, error } = await supabase
+          .from('flows')
+          .insert({
+            user_id: user.id,
+            title: flowTitle,
+            description: flowDescription,
+            canvas_data: canvasData,
+            node_count: nodes.length,
+          })
+          .select('id')
+          .single();
+
+        if (error) throw error;
+        if (data) {
+          set({ currentFlowId: data.id });
+        }
+      }
+
+      set({ saveStatus: 'saved', lastSavedAt: new Date() });
+    } catch (error) {
+      console.error('Save error:', error);
+      set({ saveStatus: 'error' });
+    }
+  },
+
+  loadFlow: async (flowId: string) => {
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('flows')
+        .select('*')
+        .eq('id', flowId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (error) throw error;
+      if (!data) return;
+
+      const canvasData = data.canvas_data as { nodes: any[]; edges: any[] };
+      const nodes: Node[] = (canvasData.nodes || []).map((n: any) => ({
+        id: n.id,
+        type: n.type || 'customNode',
+        position: n.position,
+        data: { ...n.data },
+      }));
+      const edges: Edge[] = (canvasData.edges || []).map((e: any) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        type: e.type || 'customEdge',
+        ...(e.data ? { data: e.data } : {}),
+      }));
+
+      set({
+        currentFlowId: data.id,
+        flowTitle: data.title,
+        flowDescription: data.description || '',
+        nodes,
+        edges,
+        selectedNodeId: null,
+        currentStepIndex: 0,
+        appMode: 'build',
+        saveStatus: 'saved',
+        lastSavedAt: new Date(data.updated_at),
+        isLoaded: true,
+        history: [{ nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) }],
+        historyIndex: 0,
+        canUndo: false,
+        canRedo: false,
+      });
+    } catch (error) {
+      console.error('Load error:', error);
+    }
+  },
+
+  createNewFlow: async (title?: string) => {
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return null;
+
+    const flowTitle = title || 'Untitled Flow';
+
+    try {
+      const { data, error } = await supabase
+        .from('flows')
+        .insert({
+          user_id: user.id,
+          title: flowTitle,
+          description: '',
+          canvas_data: { nodes: [], edges: [] },
+          node_count: 0,
+        })
+        .select('id')
+        .single();
+
+      if (error) throw error;
+      return data?.id || null;
+    } catch (error) {
+      console.error('Create flow error:', error);
+      return null;
+    }
+  },
+
+  deleteFlow: async (flowId: string) => {
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    try {
+      await supabase
+        .from('flows')
+        .delete()
+        .eq('id', flowId)
+        .eq('user_id', user.id);
+
+      // If we deleted the current flow, reset
+      if (get().currentFlowId === flowId) {
+        get().resetToEmpty();
+      }
+    } catch (error) {
+      console.error('Delete flow error:', error);
+    }
+  },
+
+  duplicateFlow: async (flowId: string) => {
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return null;
+
+    try {
+      const { data: original, error } = await supabase
+        .from('flows')
+        .select('*')
+        .eq('id', flowId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (error || !original) throw error;
+
+      const { data: duplicated, error: insertError } = await supabase
+        .from('flows')
+        .insert({
+          user_id: user.id,
+          title: `${original.title} (Copy)`,
+          description: original.description,
+          canvas_data: original.canvas_data,
+          node_count: original.node_count,
+        })
+        .select('id')
+        .single();
+
+      if (insertError) throw insertError;
+      return duplicated?.id || null;
+    } catch (error) {
+      console.error('Duplicate flow error:', error);
+      return null;
+    }
   },
 }));
 
