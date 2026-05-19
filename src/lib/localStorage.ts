@@ -128,8 +128,9 @@ export async function saveLocalFlow(flow: LocalFlow): Promise<void> {
     );
   } catch (err) {
     console.error('Failed to save local flow:', err);
-    // Fallback to localStorage
+    // Fallback to localStorage (only in browser)
     try {
+      if (typeof window === 'undefined') return;
       const key = `flowbuilder_flow_${flow.id}`;
       localStorage.setItem(key, JSON.stringify(flow));
       // Track keys

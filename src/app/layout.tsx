@@ -19,8 +19,56 @@ export const metadata: Metadata = {
   title: "FlowBuilder - Interactive Demo Flow Builder",
   description: "Build interactive demo flows for live client demos, training sessions, and workflow visualization.",
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: [
+      {
+        url: "/logo.svg",
+        type: "image/svg+xml",
+        sizes: "any",
+      },
+      {
+        url: "/logo.png",
+        type: "image/png",
+        sizes: "192x192",
+      },
+    ],
+    apple: [
+      {
+        url: "/logo.png",
+        sizes: "180x180",
+        type: "image/png",
+      },
+    ],
+    shortcut: "/logo.png",
   },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "FlowBuilder",
+  },
+  openGraph: {
+    title: "FlowBuilder - Interactive Demo Flow Builder",
+    description: "Build interactive demo flows for live client demos, training sessions, and workflow visualization.",
+    url: "https://flowbuilder.app",
+    siteName: "FlowBuilder",
+    images: [
+      {
+        url: "/logo.png",
+        width: 1200,
+        height: 630,
+        alt: "FlowBuilder Logo",
+      },
+    ],
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "FlowBuilder - Interactive Demo Flow Builder",
+    description: "Build interactive demo flows for live client demos, training sessions, and workflow visualization.",
+    images: ["/logo.png"],
+    creator: "@flowbuilder",
+  },
+  manifest: "/manifest.json",
+  keywords: ["flow builder", "demo flows", "workflow visualization", "training"],
 };
 
 export default function RootLayout({
@@ -73,6 +121,7 @@ export default function RootLayout({
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
+        suppressHydrationWarning
       >
         <ThemeProvider>
           <AuthProvider>

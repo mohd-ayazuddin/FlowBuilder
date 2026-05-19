@@ -56,6 +56,7 @@ const OFFLINE_QUEUE_KEY = 'flowbuilder_offline_queue';
 
 function getOfflineQueue(): OfflineChange[] {
   try {
+    if (typeof window === 'undefined') return [];
     return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || '[]');
   } catch {
     return [];
@@ -63,7 +64,12 @@ function getOfflineQueue(): OfflineChange[] {
 }
 
 function setOfflineQueue(queue: OfflineChange[]): void {
-  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+  try {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+  } catch {
+    // Silently fail - storage might be unavailable
+  }
 }
 
 function queueOfflineChange(change: OfflineChange): void {
