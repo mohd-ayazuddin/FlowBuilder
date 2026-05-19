@@ -16,7 +16,6 @@ import {
   hasLocalFlowsToMigrate,
   FlowData,
 } from '@/lib/hybridStorage';
-import { DatabaseFlow } from '@/lib/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {

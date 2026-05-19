@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { User } from '@supabase/supabase-js';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, isSupabaseConfigured } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 
 interface AuthContextType {
@@ -29,30 +29,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const subscriptionRef = useRef<any>(null);
 
-  // Check if Supabase is properly configured
-  const isSupabaseConfigured = useCallback(() => {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    return (
-      url &&
-      key &&
-      !url.includes('your-') &&
-      !key.includes('your-') &&
-      !key.includes('YOUR_') &&
-      !key.includes('_HERE') &&
-      url.startsWith('http')
-    );
-  }, []);
-
   useEffect(() => {
     let mounted = true;
 
+    // SAFETY NET: If auth takes more than 5 seconds, force guest mode
+    // This prevents infinite loading screens if Supabase is unreachable
+    const authTimeout = setTimeout(() => {
+      if (mounted && loading) {
+        console.warn('[FlowBuilder] Auth initialization timed out - entering guest mode');
+        setIsGuest(true);
+        setUser(null);
+        setLoading(false);
+      }
+    }, 5000);
+
     const initializeAuth = async () => {
       // Check if user previously chose guest mode
-      const guestMode = localStorage.getItem(GUEST_MODE_KEY);
+      const guestMode = typeof window !== 'undefined' ? localStorage.getItem(GUEST_MODE_KEY) : null;
 
       if (!isSupabaseConfigured()) {
-        // Supabase not configured - always guest mode
+        // Supabase not configured - always guest mode, never block rendering
+        clearTimeout(authTimeout);
         if (mounted) {
           setIsGuest(true);
           setUser(null);
@@ -64,23 +61,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const supabase = createClient();
 
-        // Get initial session
-        const { data: { user: currentUser } } = await supabase.auth.getUser();
+        // Get initial session with a timeout
+        const userResult = await Promise.race([
+          supabase.auth.getUser(),
+          new Promise<{ data: { user: null }; error: null }>((resolve) =>
+            setTimeout(() => resolve({ data: { user: null }, error: null }), 4000)
+          ),
+        ]);
 
-        if (!mounted) return;
+        if (!mounted) {
+          clearTimeout(authTimeout);
+          return;
+        }
+
+        const currentUser = userResult.data?.user;
 
         if (currentUser) {
           // User is logged in
           setUser(currentUser);
           setIsGuest(false);
-          localStorage.removeItem(GUEST_MODE_KEY);
+          if (typeof window !== 'undefined') {
+            localStorage.removeItem(GUEST_MODE_KEY);
+          }
         } else if (guestMode === 'true') {
           // User previously chose guest mode
           setIsGuest(true);
           setUser(null);
         } else {
           // No user and no explicit guest mode choice
-          // Auto-enter guest mode for frictionless experience
+          // Auto-enter guest mode for frictionless experience (like Figma/Miro)
           setIsGuest(true);
           setUser(null);
         }
@@ -92,19 +101,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUser(authUser);
           if (authUser) {
             setIsGuest(false);
-            localStorage.removeItem(GUEST_MODE_KEY);
+            if (typeof window !== 'undefined') {
+              localStorage.removeItem(GUEST_MODE_KEY);
+            }
           }
           setLoading(false);
         });
         subscriptionRef.current = data.subscription;
       } catch {
-        // Supabase error - guest mode
+        // Supabase error - enter guest mode silently
         if (mounted) {
           setIsGuest(true);
           setUser(null);
         }
       }
 
+      clearTimeout(authTimeout);
       if (mounted) setLoading(false);
     };
 
@@ -112,15 +124,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       mounted = false;
+      clearTimeout(authTimeout);
       if (subscriptionRef.current) {
-        subscriptionRef.current.unsubscribe();
+        try {
+          subscriptionRef.current.unsubscribe();
+        } catch {
+          // silent
+        }
       }
     };
-  }, [isSupabaseConfigured]);
+  }, []);
 
   const signUp = useCallback(async (email: string, password: string, name: string) => {
     if (!isSupabaseConfigured()) {
-      return { error: 'Authentication is not configured. Please try again later.' };
+      return { error: 'Authentication is not configured. Using guest mode.' };
     }
     try {
       const supabase = createClient();
@@ -136,11 +153,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (err: any) {
       return { error: err.message || 'Sign up failed' };
     }
-  }, [isSupabaseConfigured]);
+  }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
     if (!isSupabaseConfigured()) {
-      return { error: 'Authentication is not configured. Please try again later.' };
+      return { error: 'Authentication is not configured. Using guest mode.' };
     }
     try {
       const supabase = createClient();
@@ -153,7 +170,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (err: any) {
       return { error: err.message || 'Sign in failed' };
     }
-  }, [isSupabaseConfigured]);
+  }, []);
 
   const signOut = useCallback(async () => {
     if (isSupabaseConfigured()) {
@@ -167,9 +184,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     // Go back to guest mode after sign out
     setIsGuest(true);
-    localStorage.setItem(GUEST_MODE_KEY, 'true');
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(GUEST_MODE_KEY, 'true');
+    }
     router.push('/dashboard');
-  }, [isSupabaseConfigured, router]);
+  }, [router]);
 
   const resetPassword = useCallback(async (email: string) => {
     if (!isSupabaseConfigured()) {
@@ -185,7 +204,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (err: any) {
       return { error: err.message || 'Reset failed' };
     }
-  }, [isSupabaseConfigured]);
+  }, []);
 
   const updatePassword = useCallback(async (password: string) => {
     if (!isSupabaseConfigured()) {
@@ -199,16 +218,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (err: any) {
       return { error: err.message || 'Update failed' };
     }
-  }, [isSupabaseConfigured]);
+  }, []);
 
   const enterGuestMode = useCallback(() => {
     setIsGuest(true);
-    localStorage.setItem(GUEST_MODE_KEY, 'true');
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(GUEST_MODE_KEY, 'true');
+    }
   }, []);
 
   const exitGuestMode = useCallback(() => {
     setIsGuest(false);
-    localStorage.removeItem(GUEST_MODE_KEY);
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(GUEST_MODE_KEY);
+    }
   }, []);
 
   return (

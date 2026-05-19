@@ -21,7 +21,7 @@ import {
   clearAllLocalFlows,
   getAllLocalFlowsForMigration,
 } from './localStorage';
-import { createClient } from './supabase/client';
+import { createClient, isSupabaseConfigured } from './supabase/client';
 import { DatabaseFlow } from './supabase/types';
 
 export type StorageMode = 'local' | 'cloud';
@@ -74,22 +74,6 @@ function queueOfflineChange(change: OfflineChange): void {
   );
   filtered.push(change);
   setOfflineQueue(filtered);
-}
-
-// Check if Supabase is properly configured
-function isSupabaseConfigured(): boolean {
-  if (typeof window === 'undefined') return false;
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  return !!(
-    url &&
-    key &&
-    !url.includes('your-') &&
-    !key.includes('your-') &&
-    !key.includes('YOUR_') &&
-    !key.includes('_HERE') &&
-    url.startsWith('http')
-  );
 }
 
 // Safely get Supabase user

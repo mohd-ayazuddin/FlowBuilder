@@ -2,25 +2,36 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, isSupabaseConfigured } from '@/lib/supabase/client';
 
 export default function AuthCallbackPage() {
   const router = useRouter();
 
   useEffect(() => {
     const handleCallback = async () => {
-      const supabase = createClient();
-      const { error } = await supabase.auth.exchangeCodeForSession(
-        window.location.href
-      );
-
-      if (error) {
-        console.error('Auth callback error:', error.message);
-        router.replace('/login?error=callback');
+      // If Supabase is not configured, redirect to dashboard as guest
+      if (!isSupabaseConfigured()) {
+        router.replace('/dashboard');
         return;
       }
 
-      router.replace('/dashboard');
+      try {
+        const supabase = createClient();
+        const { error } = await supabase.auth.exchangeCodeForSession(
+          window.location.href
+        );
+
+        if (error) {
+          console.error('Auth callback error:', error.message);
+          router.replace('/dashboard');
+          return;
+        }
+
+        router.replace('/dashboard');
+      } catch {
+        // Any error - fall back to dashboard
+        router.replace('/dashboard');
+      }
     };
 
     handleCallback();
