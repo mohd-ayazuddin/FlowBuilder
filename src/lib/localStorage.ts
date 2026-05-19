@@ -321,13 +321,23 @@ export async function setLocalSetting(key: string, value: string): Promise<void>
 export async function getLocalStorageUsage(): Promise<{
   flowCount: number;
   estimatedSizeKB: number;
+  quotaUsedPercent?: number;
 }> {
   const flows = await getAllLocalFlows();
   let estimatedSizeKB = 0;
+  let quotaUsedPercent: number | undefined;
 
   try {
     const jsonSize = JSON.stringify(flows).length;
     estimatedSizeKB = Math.round(jsonSize / 1024);
+
+    // Estimate quota usage if storage API is available
+    if (navigator.storage && navigator.storage.estimate) {
+      const estimate = await navigator.storage.estimate();
+      if (estimate.quota && estimate.quota > 0) {
+        quotaUsedPercent = Math.round(((estimate.usage || 0) / estimate.quota) * 100);
+      }
+    }
   } catch {
     estimatedSizeKB = 0;
   }
@@ -335,7 +345,67 @@ export async function getLocalStorageUsage(): Promise<{
   return {
     flowCount: flows.length,
     estimatedSizeKB,
+    quotaUsedPercent,
   };
+}
+
+// ──── Quota Check ────
+
+export async function checkStorageQuota(): Promise<{
+  isOverQuota: boolean;
+  usedMB: number;
+  quotaMB: number;
+  usagePercent: number;
+}> {
+  try {
+    if (navigator.storage && navigator.storage.estimate) {
+      const estimate = await navigator.storage.estimate();
+      const usedMB = Math.round((estimate.usage || 0) / (1024 * 1024));
+      const quotaMB = Math.round((estimate.quota || 0) / (1024 * 1024));
+      const usagePercent = quotaMB > 0 ? Math.round((usedMB / quotaMB) * 100) : 0;
+      return {
+        isOverQuota: usagePercent > 90,
+        usedMB,
+        quotaMB,
+        usagePercent,
+      };
+    }
+  } catch {
+    // Can't estimate
+  }
+
+  // Fallback: estimate from flow data
+  const flows = await getAllLocalFlows();
+  const jsonSize = JSON.stringify(flows).length;
+  const usedMB = Math.round(jsonSize / (1024 * 1024) * 100) / 100;
+
+  return {
+    isOverQuota: false,
+    usedMB,
+    quotaMB: 0,
+    usagePercent: 0,
+  };
+}
+
+// ──── Cleanup Old Versions ────
+
+export async function cleanupOldVersions(): Promise<number> {
+  const flows = await getAllLocalFlows();
+  let cleaned = 0;
+
+  for (const flow of flows) {
+    if (flow.versions && flow.versions.length > 3) {
+      // Keep only last 3 versions instead of 10
+      const updated = {
+        ...flow,
+        versions: flow.versions.slice(-3),
+      };
+      await saveLocalFlow(updated);
+      cleaned += flow.versions.length - 3;
+    }
+  }
+
+  return cleaned;
 }
 
 // ──── Migration ────
@@ -356,5 +426,6 @@ export async function clearAllLocalFlows(): Promise<void> {
     });
     localStorage.removeItem('flowbuilder_flow_keys');
     localStorage.removeItem('flowbuilder_draft');
+    localStorage.removeItem('flowbuilder_offline_queue');
   }
 }

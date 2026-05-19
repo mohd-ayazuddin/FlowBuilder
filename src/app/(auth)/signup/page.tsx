@@ -8,7 +8,7 @@ import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Workflow, ArrowRight, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
+import { Workflow, ArrowRight, Eye, EyeOff, CheckCircle2, User } from 'lucide-react';
 
 export default function SignupPage() {
   const [name, setName] = useState('');
@@ -260,6 +260,17 @@ export default function SignupPage() {
               Sign in
             </Link>
           </p>
+
+          {/* Continue as Guest */}
+          <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+            <Link
+              href="/dashboard"
+              className="flex items-center justify-center gap-2 w-full h-10 rounded-xl text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors font-medium"
+            >
+              <User className="w-4 h-4" />
+              Try without account
+            </Link>
+          </div>
         </motion.div>
       </div>
     </div>

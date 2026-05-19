@@ -41,10 +41,12 @@ const PROMPT_CONFIG = {
 
 export function SoftAuthPrompt({ variant = 'generic', className = '' }: SoftAuthPromptProps) {
   const [dismissed, setDismissed] = useState(false);
-  const { isGuest } = useAuth();
+  const { isGuest, user } = useAuth();
   const router = useRouter();
 
-  if (!isGuest || dismissed) return null;
+  // Show prompt for guests or non-logged-in users
+  if ((user && !isGuest) || dismissed) return null;
+  if (!isGuest && !user) return null; // Still loading
 
   const config = PROMPT_CONFIG[variant];
   const Icon = config.icon;
@@ -93,10 +95,12 @@ export function SoftAuthPrompt({ variant = 'generic', className = '' }: SoftAuth
 
 // Compact inline prompt for the TopBar
 export function SoftAuthBadge() {
-  const { isGuest } = useAuth();
+  const { isGuest, user } = useAuth();
   const router = useRouter();
 
-  if (!isGuest) return null;
+  // Only show for guest/non-logged-in users
+  if (user && !isGuest) return null;
+  if (!isGuest && !user) return null;
 
   return (
     <motion.button

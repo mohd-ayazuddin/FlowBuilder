@@ -2,6 +2,7 @@
  * Hybrid Storage Service
  * Automatically routes to local storage (guest) or Supabase (logged in).
  * Handles offline queuing and sync.
+ * Gracefully handles Supabase unavailability.
  */
 
 import { Node, Edge } from 'reactflow';
@@ -75,29 +76,49 @@ function queueOfflineChange(change: OfflineChange): void {
   setOfflineQueue(filtered);
 }
 
-// ──── Get current storage mode ────
+// Check if Supabase is properly configured
+function isSupabaseConfigured(): boolean {
+  if (typeof window === 'undefined') return false;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  return !!(
+    url &&
+    key &&
+    !url.includes('your-') &&
+    !key.includes('your-') &&
+    !key.includes('YOUR_') &&
+    !key.includes('_HERE') &&
+    url.startsWith('http')
+  );
+}
 
-export async function getStorageMode(): Promise<StorageMode> {
+// Safely get Supabase user
+async function getSupabaseUser(): Promise<any> {
+  if (!isSupabaseConfigured()) return null;
   try {
     const supabase = createClient();
     const { data: { user } } = await supabase.auth.getUser();
-    return user ? 'cloud' : 'local';
+    return user;
   } catch {
-    return 'local';
+    return null;
   }
+}
+
+// ──── Get current storage mode ────
+
+export async function getStorageMode(): Promise<StorageMode> {
+  const user = await getSupabaseUser();
+  return user ? 'cloud' : 'local';
 }
 
 // ──── Get all flows (hybrid) ────
 
 export async function getAllFlows(): Promise<FlowData[]> {
-  const mode = await getStorageMode();
+  const user = await getSupabaseUser();
 
-  if (mode === 'cloud') {
+  if (user && isSupabaseConfigured()) {
     try {
       const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return [];
-
       const { data, error } = await supabase
         .from('flows')
         .select('*')
@@ -106,10 +127,21 @@ export async function getAllFlows(): Promise<FlowData[]> {
         .order('updated_at', { ascending: false });
 
       if (error) throw error;
-      return (data || []).map((f: DatabaseFlow) => ({
+
+      // Also get local flows that haven't been migrated yet
+      const localFlows = await getAllLocalFlows();
+      const cloudFlows = (data || []).map((f: DatabaseFlow) => ({
         ...f,
         isLocal: false,
       }));
+
+      // Merge: cloud flows + local flows (that aren't in cloud)
+      const cloudIds = new Set(cloudFlows.map((f: FlowData) => f.title));
+      const uniqueLocalFlows = localFlows
+        .filter((f) => !cloudIds.has(f.title))
+        .map((f) => ({ ...f, isLocal: true }));
+
+      return [...cloudFlows, ...uniqueLocalFlows];
     } catch {
       // Fallback to local
       const localFlows = await getAllLocalFlows();
@@ -117,6 +149,7 @@ export async function getAllFlows(): Promise<FlowData[]> {
     }
   }
 
+  // Guest mode or no Supabase - local only
   const localFlows = await getAllLocalFlows();
   return localFlows.map((f) => ({ ...f, isLocal: true }));
 }
@@ -131,23 +164,25 @@ export async function getFlow(flowId: string): Promise<FlowData | null> {
   }
 
   // Try cloud first
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      const { data, error } = await supabase
-        .from('flows')
-        .select('*')
-        .eq('id', flowId)
-        .eq('user_id', user.id)
-        .single();
+  if (isSupabaseConfigured()) {
+    try {
+      const supabase = createClient();
+      const user = await getSupabaseUser();
+      if (user) {
+        const { data, error } = await supabase
+          .from('flows')
+          .select('*')
+          .eq('id', flowId)
+          .eq('user_id', user.id)
+          .single();
 
-      if (!error && data) {
-        return { ...data, isLocal: false };
+        if (!error && data) {
+          return { ...data, isLocal: false };
+        }
       }
+    } catch {
+      // Fall through to local
     }
-  } catch {
-    // Fall through to local
   }
 
   // Fallback to local
@@ -158,14 +193,11 @@ export async function getFlow(flowId: string): Promise<FlowData | null> {
 // ──── Create flow (hybrid) ────
 
 export async function createFlow(title?: string): Promise<FlowData> {
-  const mode = await getStorageMode();
+  const user = await getSupabaseUser();
 
-  if (mode === 'cloud') {
+  if (user && isSupabaseConfigured()) {
     try {
       const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('No user');
-
       const { data, error } = await supabase
         .from('flows')
         .insert({
@@ -187,6 +219,7 @@ export async function createFlow(title?: string): Promise<FlowData> {
     }
   }
 
+  // Guest mode - local only
   const localFlow = await createLocalFlow(title);
   return { ...localFlow, isLocal: true };
 }
@@ -214,11 +247,37 @@ export async function saveFlowData(
   }
 
   // Cloud flow
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      // Queue for later sync
+  if (isSupabaseConfigured()) {
+    try {
+      const supabase = createClient();
+      const user = await getSupabaseUser();
+      if (!user) {
+        // Queue for later sync
+        queueOfflineChange({
+          id: `change_${Date.now()}`,
+          type: 'save',
+          flowId,
+          data,
+          timestamp: Date.now(),
+        });
+        return null;
+      }
+
+      const { data: updated, error } = await supabase
+        .from('flows')
+        .update({
+          ...data,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', flowId)
+        .eq('user_id', user.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return { ...updated, isLocal: false };
+    } catch {
+      // Queue for sync
       queueOfflineChange({
         id: `change_${Date.now()}`,
         type: 'save',
@@ -228,31 +287,14 @@ export async function saveFlowData(
       });
       return null;
     }
-
-    const { data: updated, error } = await supabase
-      .from('flows')
-      .update({
-        ...data,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', flowId)
-      .eq('user_id', user.id)
-      .select()
-      .single();
-
-    if (error) throw error;
-    return { ...updated, isLocal: false };
-  } catch {
-    // Queue for sync
-    queueOfflineChange({
-      id: `change_${Date.now()}`,
-      type: 'save',
-      flowId,
-      data,
-      timestamp: Date.now(),
-    });
-    return null;
   }
+
+  // No Supabase - save as local
+  const updated = await updateLocalFlow(flowId, {
+    ...data,
+    updated_at: new Date().toISOString(),
+  });
+  return updated ? { ...updated, isLocal: true } : null;
 }
 
 // ──── Delete flow (hybrid) ────
@@ -263,27 +305,32 @@ export async function deleteFlowData(flowId: string): Promise<void> {
     return;
   }
 
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
+  if (isSupabaseConfigured()) {
+    try {
+      const supabase = createClient();
+      const user = await getSupabaseUser();
+      if (!user) {
+        queueOfflineChange({
+          id: `change_${Date.now()}`,
+          type: 'delete',
+          flowId,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      await supabase.from('flows').delete().eq('id', flowId).eq('user_id', user.id);
+    } catch {
       queueOfflineChange({
         id: `change_${Date.now()}`,
         type: 'delete',
         flowId,
         timestamp: Date.now(),
       });
-      return;
     }
-
-    await supabase.from('flows').delete().eq('id', flowId).eq('user_id', user.id);
-  } catch {
-    queueOfflineChange({
-      id: `change_${Date.now()}`,
-      type: 'delete',
-      flowId,
-      timestamp: Date.now(),
-    });
+  } else {
+    // No Supabase - try local
+    await deleteLocalFlow(flowId);
   }
 }
 
@@ -295,37 +342,43 @@ export async function duplicateFlowData(flowId: string): Promise<FlowData | null
     return duplicated ? { ...duplicated, isLocal: true } : null;
   }
 
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
+  if (isSupabaseConfigured()) {
+    try {
+      const supabase = createClient();
+      const user = await getSupabaseUser();
+      if (!user) return null;
 
-    const { data: original, error } = await supabase
-      .from('flows')
-      .select('*')
-      .eq('id', flowId)
-      .eq('user_id', user.id)
-      .single();
+      const { data: original, error } = await supabase
+        .from('flows')
+        .select('*')
+        .eq('id', flowId)
+        .eq('user_id', user.id)
+        .single();
 
-    if (error || !original) throw error;
+      if (error || !original) throw error;
 
-    const { data: duplicated, error: insertError } = await supabase
-      .from('flows')
-      .insert({
-        user_id: user.id,
-        title: `${original.title} (Copy)`,
-        description: original.description,
-        canvas_data: original.canvas_data,
-        node_count: original.node_count,
-      })
-      .select()
-      .single();
+      const { data: duplicated, error: insertError } = await supabase
+        .from('flows')
+        .insert({
+          user_id: user.id,
+          title: `${original.title} (Copy)`,
+          description: original.description,
+          canvas_data: original.canvas_data,
+          node_count: original.node_count,
+        })
+        .select()
+        .single();
 
-    if (insertError) throw insertError;
-    return { ...duplicated, isLocal: false };
-  } catch {
-    return null;
+      if (insertError) throw insertError;
+      return { ...duplicated, isLocal: false };
+    } catch {
+      return null;
+    }
   }
+
+  // No Supabase - try local
+  const duplicated = await duplicateLocalFlow(flowId);
+  return duplicated ? { ...duplicated, isLocal: true } : null;
 }
 
 // ──── Rename flow (hybrid) ────
@@ -336,19 +389,23 @@ export async function renameFlow(flowId: string, title: string): Promise<void> {
     return;
   }
 
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase.from('flows').update({ title }).eq('id', flowId).eq('user_id', user.id);
-  } catch {
-    queueOfflineChange({
-      id: `change_${Date.now()}`,
-      type: 'update',
-      flowId,
-      data: { title },
-      timestamp: Date.now(),
-    });
+  if (isSupabaseConfigured()) {
+    try {
+      const supabase = createClient();
+      const user = await getSupabaseUser();
+      if (!user) return;
+      await supabase.from('flows').update({ title }).eq('id', flowId).eq('user_id', user.id);
+    } catch {
+      queueOfflineChange({
+        id: `change_${Date.now()}`,
+        type: 'update',
+        flowId,
+        data: { title },
+        timestamp: Date.now(),
+      });
+    }
+  } else {
+    await updateLocalFlow(flowId, { title });
   }
 }
 
@@ -360,13 +417,17 @@ export async function toggleFlowPin(flowId: string, current: boolean): Promise<v
     return;
   }
 
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase.from('flows').update({ is_pinned: !current }).eq('id', flowId).eq('user_id', user.id);
-  } catch {
-    // silent
+  if (isSupabaseConfigured()) {
+    try {
+      const supabase = createClient();
+      const user = await getSupabaseUser();
+      if (!user) return;
+      await supabase.from('flows').update({ is_pinned: !current }).eq('id', flowId).eq('user_id', user.id);
+    } catch {
+      // silent
+    }
+  } else {
+    await updateLocalFlow(flowId, { is_pinned: !current });
   }
 }
 
@@ -376,13 +437,17 @@ export async function toggleFlowFavorite(flowId: string, current: boolean): Prom
     return;
   }
 
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase.from('flows').update({ is_favorite: !current }).eq('id', flowId).eq('user_id', user.id);
-  } catch {
-    // silent
+  if (isSupabaseConfigured()) {
+    try {
+      const supabase = createClient();
+      const user = await getSupabaseUser();
+      if (!user) return;
+      await supabase.from('flows').update({ is_favorite: !current }).eq('id', flowId).eq('user_id', user.id);
+    } catch {
+      // silent
+    }
+  } else {
+    await updateLocalFlow(flowId, { is_favorite: !current });
   }
 }
 
@@ -394,8 +459,13 @@ export async function migrateLocalFlowsToCloud(): Promise<{
   errors: string[];
 }> {
   const localFlows = await getAllLocalFlowsForMigration();
+
+  if (!isSupabaseConfigured()) {
+    return { migrated: 0, failed: localFlows.length, errors: ['Cloud storage not configured'] };
+  }
+
   const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getSupabaseUser();
 
   if (!user) {
     return { migrated: 0, failed: localFlows.length, errors: ['Not authenticated'] };
@@ -478,6 +548,7 @@ export async function recoverDraft(): Promise<FlowData | null> {
 export async function getStorageUsage(): Promise<{
   flowCount: number;
   estimatedSizeKB: number;
+  quotaUsedPercent?: number;
 }> {
   return getLocalStorageUsage();
 }
@@ -491,8 +562,10 @@ export async function processOfflineQueue(): Promise<{
   const queue = getOfflineQueue();
   if (queue.length === 0) return { processed: 0, failed: 0 };
 
+  if (!isSupabaseConfigured()) return { processed: 0, failed: queue.length };
+
   const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getSupabaseUser();
   if (!user) return { processed: 0, failed: queue.length };
 
   let processed = 0;
@@ -535,4 +608,11 @@ export async function processOfflineQueue(): Promise<{
   }
 
   return { processed, failed };
+}
+
+// ──── Check if there are local flows to migrate ────
+
+export async function hasLocalFlowsToMigrate(): Promise<boolean> {
+  const flows = await getAllLocalFlows();
+  return flows.length > 0;
 }

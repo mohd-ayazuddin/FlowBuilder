@@ -13,6 +13,7 @@ import {
   toggleFlowPin,
   toggleFlowFavorite,
   getStorageUsage,
+  hasLocalFlowsToMigrate,
   FlowData,
 } from '@/lib/hybridStorage';
 import { DatabaseFlow } from '@/lib/supabase/types';
@@ -30,6 +31,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
 import {
@@ -58,6 +60,8 @@ import {
   Cloud,
   ArrowRight,
   Shield,
+  Sparkles,
+  Zap,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useAppStore } from '@/lib/store';
@@ -85,7 +89,8 @@ export default function DashboardPage() {
   const [newFlowDialogOpen, setNewFlowDialogOpen] = useState(false);
   const [newFlowTitle, setNewFlowTitle] = useState('');
   const [migrationDialogOpen, setMigrationDialogOpen] = useState(false);
-  const [storageUsage, setStorageUsage] = useState<{ flowCount: number; estimatedSizeKB: number }>({ flowCount: 0, estimatedSizeKB: 0 });
+  const [storageUsage, setStorageUsage] = useState<{ flowCount: number; estimatedSizeKB: number; quotaUsedPercent?: number }>({ flowCount: 0, estimatedSizeKB: 0 });
+  const [softPromptVariant, setSoftPromptVariant] = useState<'save' | 'sync' | 'backup'>('save');
 
   // Fetch flows (hybrid - local for guests, cloud for logged in)
   const fetchFlows = useCallback(async () => {
@@ -102,9 +107,13 @@ export default function DashboardPage() {
   useEffect(() => {
     // Allow both guests and logged-in users
     if (!authLoading) {
+      // Auto-enter guest mode if not logged in
+      if (!user && !isGuest) {
+        enterGuestMode();
+      }
       fetchFlows();
     }
-  }, [authLoading, user, fetchFlows]);
+  }, [authLoading, user, fetchFlows, isGuest, enterGuestMode]);
 
   // Storage usage for guests
   useEffect(() => {
@@ -116,14 +125,25 @@ export default function DashboardPage() {
   // Check for migration after login
   useEffect(() => {
     if (user && !authLoading && !isGuest) {
-      // Check if there are local flows to migrate
-      getStorageUsage().then((usage) => {
-        if (usage.flowCount > 0) {
+      hasLocalFlowsToMigrate().then((hasFlows) => {
+        if (hasFlows) {
           setMigrationDialogOpen(true);
         }
       });
     }
   }, [user, authLoading, isGuest]);
+
+  // Rotate soft prompt variant
+  useEffect(() => {
+    if (!isGuest) return;
+    const variants: ('save' | 'sync' | 'backup')[] = ['save', 'sync', 'backup'];
+    let idx = 0;
+    const interval = setInterval(() => {
+      idx = (idx + 1) % variants.length;
+      setSoftPromptVariant(variants[idx]);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [isGuest]);
 
   // Handle create new flow
   const handleCreateNew = async () => {
@@ -329,8 +349,18 @@ export default function DashboardPage() {
         {/* Page Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-              {isGuest ? 'Guest Flows' : 'Your Flows'}
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+              {isGuest ? (
+                <>
+                  <Sparkles className="w-5 h-5 text-amber-500" />
+                  Guest Flows
+                </>
+              ) : (
+                <>
+                  <Cloud className="w-5 h-5 text-emerald-500" />
+                  Your Flows
+                </>
+              )}
             </h1>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
               {isGuest
@@ -347,9 +377,9 @@ export default function DashboardPage() {
           </Button>
         </div>
 
-        {/* Guest Mode Info Banner */}
+        {/* Guest Mode Info Banner - rotating variant */}
         {isGuest && (
-          <SoftAuthPrompt variant="save" className="mb-6" />
+          <SoftAuthPrompt variant={softPromptVariant} className="mb-6" />
         )}
 
         {/* Storage info for guests */}
@@ -362,6 +392,14 @@ export default function DashboardPage() {
             )}
             {storageUsage.estimatedSizeKB > 0 && (
               <span>{storageUsage.estimatedSizeKB > 1024 ? `${(storageUsage.estimatedSizeKB / 1024).toFixed(1)} MB` : `${storageUsage.estimatedSizeKB} KB`} used</span>
+            )}
+            {storageUsage.quotaUsedPercent != null && storageUsage.quotaUsedPercent > 70 && (
+              <>
+                <span className="text-gray-300 dark:text-gray-600">·</span>
+                <span className={storageUsage.quotaUsedPercent > 90 ? 'text-amber-500 font-medium' : 'text-amber-400'}>
+                  {storageUsage.quotaUsedPercent}% storage used
+                </span>
+              </>
             )}
           </div>
         )}
@@ -452,7 +490,9 @@ export default function DashboardPage() {
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-sm mx-auto">
               {search
                 ? 'Try a different search term or clear your search.'
-                : 'Create your first flow and start building interactive demo workflows.'}
+                : isGuest
+                  ? 'Start building your first flow — no account needed. It\'s saved automatically in your browser.'
+                  : 'Create your first flow and start building interactive demo workflows.'}
             </p>
             {!search && (
               <Button
@@ -472,6 +512,7 @@ export default function DashboardPage() {
                   key={flow.id}
                   flow={flow}
                   index={idx}
+                  isGuest={isGuest}
                   onOpen={handleOpenFlow}
                   onDuplicate={handleDuplicate}
                   onDelete={(f) => { setSelectedFlow(f); setDeleteDialogOpen(true); }}
@@ -491,9 +532,10 @@ export default function DashboardPage() {
                   key={flow.id}
                   flow={flow}
                   index={idx}
+                  isGuest={isGuest}
                   onOpen={handleOpenFlow}
                   onDuplicate={handleDuplicate}
-                  onDelete={(f) => { setSelectedFlow(f); setDeleteDialogOpen(true); }}
+                  onDelete={(f) => { setSelectedFlow(f); setRenameValue(f.title); setDeleteDialogOpen(true); }}
                   onRename={(f) => { setSelectedFlow(f); setRenameValue(f.title); setRenameDialogOpen(true); }}
                   onTogglePin={handleTogglePin}
                   onToggleFavorite={handleToggleFavorite}
@@ -509,7 +551,13 @@ export default function DashboardPage() {
       <Dialog open={newFlowDialogOpen} onOpenChange={setNewFlowDialogOpen}>
         <DialogContent className="sm:max-w-md rounded-2xl">
           <DialogHeader>
-            <DialogTitle className="text-lg">Create New Flow</DialogTitle>
+            <DialogTitle className="text-lg flex items-center gap-2">
+              <Zap className="w-5 h-5 text-emerald-500" />
+              Create New Flow
+            </DialogTitle>
+            <DialogDescription className="text-sm text-gray-500 dark:text-gray-400">
+              Start building a new interactive demo workflow.
+            </DialogDescription>
           </DialogHeader>
           <div className="py-4">
             <Input
@@ -525,7 +573,7 @@ export default function DashboardPage() {
             {isGuest && (
               <p className="text-[11px] text-gray-400 mt-2 flex items-center gap-1">
                 <HardDrive className="w-3 h-3" />
-                Saved locally in your browser
+                Saved locally in your browser — sign up for cloud sync
               </p>
             )}
           </div>
@@ -548,6 +596,7 @@ export default function DashboardPage() {
         <DialogContent className="sm:max-w-md rounded-2xl">
           <DialogHeader>
             <DialogTitle className="text-lg">Delete Flow</DialogTitle>
+            <DialogDescription>This action cannot be undone.</DialogDescription>
           </DialogHeader>
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Are you sure you want to delete &ldquo;{selectedFlow?.title}&rdquo;? This action cannot be undone.
@@ -568,6 +617,7 @@ export default function DashboardPage() {
         <DialogContent className="sm:max-w-md rounded-2xl">
           <DialogHeader>
             <DialogTitle className="text-lg">Rename Flow</DialogTitle>
+            <DialogDescription>Enter a new name for your flow.</DialogDescription>
           </DialogHeader>
           <div className="py-4">
             <Input
@@ -613,6 +663,7 @@ export default function DashboardPage() {
 function FlowCard({
   flow,
   index,
+  isGuest,
   onOpen,
   onDuplicate,
   onDelete,
@@ -623,6 +674,7 @@ function FlowCard({
 }: {
   flow: FlowData;
   index: number;
+  isGuest: boolean;
   onOpen: (id: string) => void;
   onDuplicate: (flow: FlowData) => void;
   onDelete: (flow: FlowData) => void;
@@ -680,9 +732,18 @@ function FlowCard({
           </div>
         )}
 
+        {/* Cloud badge for logged-in users */}
+        {!flow.isLocal && !isGuest && (
+          <div className="absolute top-2 left-2">
+            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 uppercase">
+              <Cloud className="w-2.5 h-2.5" /> Cloud
+            </span>
+          </div>
+        )}
+
         {/* Pin indicator */}
         {flow.is_pinned && (
-          <div className={`absolute top-2 ${flow.isLocal ? 'left-16' : 'left-2'}`}>
+          <div className={`absolute top-2 ${flow.isLocal ? 'left-16' : 'left-16'}`}>
             <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 uppercase">
               <Pin className="w-2.5 h-2.5" /> Pinned
             </span>
@@ -768,6 +829,7 @@ function FlowCard({
 function FlowListItem({
   flow,
   index,
+  isGuest,
   onOpen,
   onDuplicate,
   onDelete,
@@ -778,6 +840,7 @@ function FlowListItem({
 }: {
   flow: FlowData;
   index: number;
+  isGuest: boolean;
   onOpen: (id: string) => void;
   onDuplicate: (flow: FlowData) => void;
   onDelete: (flow: FlowData) => void;
@@ -821,6 +884,7 @@ function FlowListItem({
         <div className="flex items-center gap-2">
           {flow.is_pinned && <Pin className="w-3 h-3 text-emerald-500 flex-shrink-0" />}
           {flow.isLocal && <HardDrive className="w-3 h-3 text-blue-400 flex-shrink-0" />}
+          {!flow.isLocal && !isGuest && <Cloud className="w-3 h-3 text-emerald-400 flex-shrink-0" />}
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
             {flow.title}
           </h3>
@@ -829,6 +893,7 @@ function FlowListItem({
           <span>{nodeCount} nodes</span>
           <span>{formatDate(flow.updated_at)}</span>
           {flow.isLocal && <span className="text-blue-400">Local</span>}
+          {!flow.isLocal && !isGuest && <span className="text-emerald-400">Cloud</span>}
         </div>
       </div>
 
