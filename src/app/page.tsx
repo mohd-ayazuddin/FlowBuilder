@@ -6,13 +6,14 @@ import { useAuth } from '@/components/auth/AuthProvider';
 
 export default function Home() {
   const router = useRouter();
-  const { user, loading } = useAuth();
+  const { user, loading, isGuest } = useAuth();
 
   useEffect(() => {
     if (!loading) {
-      router.replace(user ? '/dashboard' : '/login');
+      // Always go to dashboard - both guests and logged-in users
+      router.replace('/dashboard');
     }
-  }, [user, loading, router]);
+  }, [user, loading, isGuest, router]);
 
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950">

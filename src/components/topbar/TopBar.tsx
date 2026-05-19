@@ -27,7 +27,6 @@ import {
   Presentation,
   FileText,
   ImageIcon,
-  MonitorPlay,
   ArrowLeft,
   Cloud,
   CloudOff,
@@ -35,7 +34,11 @@ import {
   LogOut,
   LayoutDashboard,
   FileJson,
+  HardDrive,
+  User,
+  ArrowRight,
 } from 'lucide-react';
+import { SoftAuthBadge } from '@/components/auth/SoftAuthPrompt';
 import { useCallback } from 'react';
 import { toPng } from 'html-to-image';
 import jsPDF from 'jspdf';
@@ -65,7 +68,7 @@ function Workflow({ className }: { className?: string }) {
 export function TopBar() {
   const { theme, setTheme } = useTheme();
   const router = useRouter();
-  const { user, signOut } = useAuth();
+  const { user, signOut, isGuest } = useAuth();
   const appMode = useAppStore((s) => s.appMode);
   const setAppMode = useAppStore((s) => s.setAppMode);
   const undo = useAppStore((s) => s.undo);
@@ -77,6 +80,7 @@ export function TopBar() {
   const saveFlow = useAppStore((s) => s.saveFlow);
   const saveStatus = useAppStore((s) => s.saveStatus);
   const currentFlowId = useAppStore((s) => s.currentFlowId);
+  const isLocalFlow = useAppStore((s) => s.isLocalFlow);
   const flowTitle = useAppStore((s) => s.flowTitle);
   const setFlowTitle = useAppStore((s) => s.setFlowTitle);
   const lastSavedAt = useAppStore((s) => s.lastSavedAt);
@@ -221,8 +225,17 @@ export function TopBar() {
           </>
         ) : saveStatus === 'saved' ? (
           <>
-            <Cloud className="w-3.5 h-3.5 mr-1.5 text-emerald-500" />
-            <span className="hidden sm:inline text-emerald-600 dark:text-emerald-400">Saved</span>
+            {isLocalFlow || isGuest ? (
+              <>
+                <HardDrive className="w-3.5 h-3.5 mr-1.5 text-blue-500" />
+                <span className="hidden sm:inline text-blue-600 dark:text-blue-400">Saved locally</span>
+              </>
+            ) : (
+              <>
+                <Cloud className="w-3.5 h-3.5 mr-1.5 text-emerald-500" />
+                <span className="hidden sm:inline text-emerald-600 dark:text-emerald-400">Saved</span>
+              </>
+            )}
           </>
         ) : saveStatus === 'error' ? (
           <>
@@ -259,6 +272,9 @@ export function TopBar() {
 
       {/* Spacer */}
       <div className="flex-1" />
+
+      {/* Guest Mode: Soft auth prompt */}
+      {isGuest && <SoftAuthBadge />}
 
       {/* Zoom Controls */}
       <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-gray-800/80 rounded-lg px-1.5 py-0.5">
@@ -332,8 +348,8 @@ export function TopBar() {
         Present
       </Button>
 
-      {/* User Menu */}
-      {user && (
+      {/* User Menu or Guest */}
+      {user ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button className="ml-1 w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-white text-[11px] font-bold hover:scale-105 transition-transform">
@@ -353,6 +369,16 @@ export function TopBar() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+      ) : (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => router.push('/login')}
+          className="ml-1 h-7 px-2 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+        >
+          <User className="w-3.5 h-3.5 mr-1" />
+          <span className="hidden sm:inline">Sign in</span>
+        </Button>
       )}
     </div>
   );

@@ -14,7 +14,7 @@ export default function FlowPage() {
   const router = useRouter();
   const params = useParams();
   const flowId = params.id as string;
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, isGuest } = useAuth();
 
   const appMode = useAppStore((s) => s.appMode);
   const currentFlowId = useAppStore((s) => s.currentFlowId);
@@ -25,39 +25,36 @@ export default function FlowPage() {
   const nodes = useAppStore((s) => s.nodes);
   const edges = useAppStore((s) => s.edges);
   const flowTitle = useAppStore((s) => s.flowTitle);
+  const refreshStorageMode = useAppStore((s) => s.refreshStorageMode);
 
   const [loading, setLoading] = useState(true);
   const [autosaveTimer, setAutosaveTimer] = useState<NodeJS.Timeout | null>(null);
 
-  // Redirect if not authenticated
+  // No auth redirect - allow both guests and logged-in users
+  // Refresh storage mode on mount
   useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/login');
-    }
-  }, [authLoading, user, router]);
+    refreshStorageMode();
+  }, [refreshStorageMode, user]);
 
   // Load flow data on mount
   useEffect(() => {
-    if (user && flowId && currentFlowId !== flowId) {
+    if (flowId && currentFlowId !== flowId) {
       loadFlow(flowId).then(() => setLoading(false));
     } else if (currentFlowId === flowId) {
       setLoading(false);
     }
-  }, [user, flowId, currentFlowId, loadFlow]);
+  }, [flowId, currentFlowId, loadFlow]);
 
   // Autosave with debounce (every 5 seconds of inactivity after changes)
+  // Works for both guest (local) and logged-in (cloud) users
   useEffect(() => {
-    // Don't autosave before initial load or without a flow
-    if (!currentFlowId || !user || !isLoaded) return;
-    // Only autosave when there are unsaved changes
+    if (!currentFlowId || !isLoaded) return;
     if (saveStatus === 'saved' || saveStatus === 'saving') return;
 
-    // Clear existing timer
     if (autosaveTimer) {
       clearTimeout(autosaveTimer);
     }
 
-    // Set new timer
     const timer = setTimeout(() => {
       saveFlow();
     }, 5000);
@@ -67,7 +64,7 @@ export default function FlowPage() {
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [nodes, edges, flowTitle, currentFlowId, user, isLoaded, saveStatus]);
+  }, [nodes, edges, flowTitle, currentFlowId, isLoaded, saveStatus]);
 
   // Save before leaving
   useEffect(() => {

@@ -6,43 +6,59 @@ export async function updateSession(request: NextRequest) {
     request,
   });
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) =>
-            request.cookies.set(name, value)
-          );
-          supabaseResponse = NextResponse.next({
-            request,
-          });
-          cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, options)
-          );
-        },
-      },
+  // Skip Supabase client creation if env vars are not set
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey || supabaseAnonKey === 'YOUR_SUPABASE_ANON_KEY_HERE') {
+    // Supabase not configured - allow all routes for guest mode
+    // Redirect root to dashboard
+    if (request.nextUrl.pathname === '/') {
+      const url = request.nextUrl.clone();
+      url.pathname = '/dashboard';
+      return NextResponse.redirect(url);
     }
-  );
+    return supabaseResponse;
+  }
 
-  // IMPORTANT: Avoid writing any logic between createServerClient and
-  // supabase.auth.getUser(). A simple mistake could make it very hard to debug
-  // issues with users being randomly logged out.
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+    cookies: {
+      getAll() {
+        return request.cookies.getAll();
+      },
+      setAll(cookiesToSet) {
+        cookiesToSet.forEach(({ name, value }) =>
+          request.cookies.set(name, value)
+        );
+        supabaseResponse = NextResponse.next({
+          request,
+        });
+        cookiesToSet.forEach(({ name, value, options }) =>
+          supabaseResponse.cookies.set(name, value, options)
+        );
+      },
+    },
+  });
 
-  // Protected routes - redirect to login if not authenticated
-  const protectedPaths = ['/dashboard', '/flow'];
-  const isProtectedPath = protectedPaths.some((path) =>
+  // Get user session
+  let user: any = null;
+  try {
+    const result = await supabase.auth.getUser();
+    user = result.data.user;
+  } catch {
+    // Auth check failed - treat as guest
+  }
+
+  // Check for guest mode cookie
+  const isGuestMode = request.cookies.get('flowbuilder_guest_mode')?.value === 'true';
+
+  // Protected routes that REQUIRE authentication (not available to guests)
+  const strictProtectedPaths: string[] = [];
+  const isStrictProtected = strictProtectedPaths.some((path) =>
     request.nextUrl.pathname.startsWith(path)
   );
 
-  if (!user && isProtectedPath) {
+  if (!user && isStrictProtected) {
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     url.searchParams.set('redirectTo', request.nextUrl.pathname);
@@ -61,10 +77,10 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // Redirect root to dashboard or login
+  // Redirect root to dashboard (both guests and logged-in users)
   if (request.nextUrl.pathname === '/') {
     const url = request.nextUrl.clone();
-    url.pathname = user ? '/dashboard' : '/login';
+    url.pathname = '/dashboard';
     return NextResponse.redirect(url);
   }
 

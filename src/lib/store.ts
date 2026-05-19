@@ -6,6 +6,16 @@ import { FlowNodeData, NodeType, StepStatus, AppMode, Template } from './types';
 import { NODE_TYPE_CONFIG, TEMPLATES } from './constants';
 import { SaveStatus } from './supabase/types';
 import { createClient } from './supabase/client';
+import {
+  createFlow,
+  saveFlowData,
+  getFlow,
+  deleteFlowData,
+  duplicateFlowData,
+  saveAutoDraft,
+  getStorageMode,
+  StorageMode,
+} from './hybridStorage';
 
 interface AppState {
   // Mode
@@ -27,6 +37,10 @@ interface AppState {
   setLastSavedAt: (date: Date | null) => void;
   isLoaded: boolean;
   setIsLoaded: (loaded: boolean) => void;
+  isLocalFlow: boolean;
+  setIsLocalFlow: (local: boolean) => void;
+  storageMode: StorageMode;
+  setStorageMode: (mode: StorageMode) => void;
 
   // Flow
   nodes: Node[];
@@ -81,13 +95,14 @@ interface AppState {
   // Templates
   loadTemplate: (template: Template) => void;
 
-  // Supabase operations
+  // Hybrid storage operations
   saveFlow: () => Promise<void>;
   loadFlow: (flowId: string) => Promise<void>;
   createNewFlow: (title?: string) => Promise<string | null>;
   deleteFlow: (flowId: string) => Promise<void>;
   duplicateFlow: (flowId: string) => Promise<string | null>;
   resetToEmpty: () => void;
+  refreshStorageMode: () => Promise<void>;
 }
 
 const generateId = () => `node-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -116,6 +131,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setLastSavedAt: (date) => set({ lastSavedAt: date }),
   isLoaded: false,
   setIsLoaded: (loaded) => set({ isLoaded: loaded }),
+  isLocalFlow: false,
+  setIsLocalFlow: (local) => set({ isLocalFlow: local }),
+  storageMode: 'local',
+  setStorageMode: (mode) => set({ storageMode: mode }),
 
   // Flow
   nodes: emptyNodes,
@@ -178,7 +197,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   removeNode: (id) => {
     const nodes = get().nodes.filter((n) => n.id !== id);
     const edges = get().edges.filter((e) => e.source !== id && e.target !== id);
-    // Remove from dependencies
     const updatedNodes = nodes.map((n) => {
       const data = n.data as FlowNodeData;
       if (data.dependencies.includes(id)) {
@@ -221,7 +239,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       return n;
     });
     set({ nodes });
-    // Re-evaluate blocked nodes
     reevaluateBlockedNodes(get, set);
   },
 
@@ -262,7 +279,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     const currentIdx = get().currentStepIndex;
     if (currentIdx < steps.length - 1) {
       const currentStep = steps[currentIdx];
-      // Mark current as completed
       const nodes = get().nodes.map((n) => {
         if (n.id === currentStep.id) {
           return {
@@ -272,7 +288,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         return n;
       });
-      // Mark next as active
       const nextStep = steps[currentIdx + 1];
       const updatedNodes = nodes.map((n) => {
         if (n.id === nextStep.id) {
@@ -292,7 +307,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     const currentIdx = get().currentStepIndex;
     if (currentIdx > 0) {
       const currentStep = steps[currentIdx];
-      // Mark current as pending
       const nodes = get().nodes.map((n) => {
         if (n.id === currentStep.id) {
           return {
@@ -302,7 +316,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         return n;
       });
-      // Mark previous as active
       const prevStep = steps[currentIdx - 1];
       const updatedNodes = nodes.map((n) => {
         if (n.id === prevStep.id) {
@@ -380,7 +393,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { nodes, edges, historyIndex, history } = get();
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push({ nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) });
-    // Keep last 50 states
     if (newHistory.length > 50) {
       newHistory.shift();
     }
@@ -441,6 +453,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       saveStatus: 'idle',
       lastSavedAt: null,
       isLoaded: false,
+      isLocalFlow: false,
       history: emptyHistory,
       historyIndex: 0,
       canUndo: false,
@@ -448,14 +461,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  // ──── Supabase Operations ────
+  // Refresh storage mode based on auth state
+  refreshStorageMode: async () => {
+    const mode = await getStorageMode();
+    set({ storageMode: mode });
+  },
+
+  // ──── Hybrid Storage Operations ────
 
   saveFlow: async () => {
-    const { currentFlowId, nodes, edges, flowTitle, flowDescription } = get();
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
+    const { currentFlowId, nodes, edges, flowTitle, flowDescription, isLocalFlow } = get();
     set({ saveStatus: 'saving' });
 
     const canvasData = {
@@ -465,41 +480,40 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     try {
       if (currentFlowId) {
-        // Update existing flow
-        const { error } = await supabase
-          .from('flows')
-          .update({
-            title: flowTitle,
-            description: flowDescription,
-            canvas_data: canvasData,
-            node_count: nodes.length,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', currentFlowId)
-          .eq('user_id', user.id);
+        // Save auto-draft for crash recovery
+        await saveAutoDraft(currentFlowId, flowTitle, canvasData);
 
-        if (error) throw error;
+        // Update existing flow (hybrid routes to local or cloud)
+        const result = await saveFlowData(currentFlowId, {
+          title: flowTitle,
+          description: flowDescription,
+          canvas_data: canvasData,
+          node_count: nodes.length,
+        });
+
+        set({ saveStatus: 'saved', lastSavedAt: new Date() });
       } else {
-        // Create new flow
-        const { data, error } = await supabase
-          .from('flows')
-          .insert({
-            user_id: user.id,
-            title: flowTitle,
-            description: flowDescription,
-            canvas_data: canvasData,
-            node_count: nodes.length,
-          })
-          .select('id')
-          .single();
+        // No flow ID yet - create a new flow
+        const flow = await createFlow(flowTitle);
+        const updatedCanvas = {
+          nodes: JSON.parse(JSON.stringify(nodes)),
+          edges: JSON.parse(JSON.stringify(edges)),
+        };
 
-        if (error) throw error;
-        if (data) {
-          set({ currentFlowId: data.id });
-        }
+        const savedFlow = await saveFlowData(flow.id, {
+          title: flowTitle,
+          description: flowDescription,
+          canvas_data: updatedCanvas,
+          node_count: nodes.length,
+        });
+
+        set({
+          currentFlowId: flow.id,
+          isLocalFlow: flow.isLocal || false,
+          saveStatus: 'saved',
+          lastSavedAt: new Date(),
+        });
       }
-
-      set({ saveStatus: 'saved', lastSavedAt: new Date() });
     } catch (error) {
       console.error('Save error:', error);
       set({ saveStatus: 'error' });
@@ -507,29 +521,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   loadFlow: async (flowId: string) => {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
     try {
-      const { data, error } = await supabase
-        .from('flows')
-        .select('*')
-        .eq('id', flowId)
-        .eq('user_id', user.id)
-        .single();
+      const flowData = await getFlow(flowId);
+      if (!flowData) return;
 
-      if (error) throw error;
-      if (!data) return;
-
-      const canvasData = data.canvas_data as { nodes: any[]; edges: any[] };
-      const nodes: Node[] = (canvasData.nodes || []).map((n: any) => ({
+      const canvasData = flowData.canvas_data as { nodes: any[]; edges: any[] };
+      const nodes: Node[] = (canvasData?.nodes || []).map((n: any) => ({
         id: n.id,
         type: n.type || 'customNode',
         position: n.position,
         data: { ...n.data },
       }));
-      const edges: Edge[] = (canvasData.edges || []).map((e: any) => ({
+      const edges: Edge[] = (canvasData?.edges || []).map((e: any) => ({
         id: e.id,
         source: e.source,
         target: e.target,
@@ -538,17 +541,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
 
       set({
-        currentFlowId: data.id,
-        flowTitle: data.title,
-        flowDescription: data.description || '',
+        currentFlowId: flowData.id,
+        flowTitle: flowData.title,
+        flowDescription: flowData.description || '',
         nodes,
         edges,
         selectedNodeId: null,
         currentStepIndex: 0,
         appMode: 'build',
         saveStatus: 'saved',
-        lastSavedAt: new Date(data.updated_at),
+        lastSavedAt: new Date(flowData.updated_at),
         isLoaded: true,
+        isLocalFlow: flowData.isLocal || false,
         history: [{ nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) }],
         historyIndex: 0,
         canUndo: false,
@@ -560,27 +564,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   createNewFlow: async (title?: string) => {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
-
     const flowTitle = title || 'Untitled Flow';
-
     try {
-      const { data, error } = await supabase
-        .from('flows')
-        .insert({
-          user_id: user.id,
-          title: flowTitle,
-          description: '',
-          canvas_data: { nodes: [], edges: [] },
-          node_count: 0,
-        })
-        .select('id')
-        .single();
-
-      if (error) throw error;
-      return data?.id || null;
+      const flow = await createFlow(flowTitle);
+      return flow.id;
     } catch (error) {
       console.error('Create flow error:', error);
       return null;
@@ -588,18 +575,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   deleteFlow: async (flowId: string) => {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
     try {
-      await supabase
-        .from('flows')
-        .delete()
-        .eq('id', flowId)
-        .eq('user_id', user.id);
-
-      // If we deleted the current flow, reset
+      await deleteFlowData(flowId);
       if (get().currentFlowId === flowId) {
         get().resetToEmpty();
       }
@@ -609,33 +586,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   duplicateFlow: async (flowId: string) => {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
-
     try {
-      const { data: original, error } = await supabase
-        .from('flows')
-        .select('*')
-        .eq('id', flowId)
-        .eq('user_id', user.id)
-        .single();
-
-      if (error || !original) throw error;
-
-      const { data: duplicated, error: insertError } = await supabase
-        .from('flows')
-        .insert({
-          user_id: user.id,
-          title: `${original.title} (Copy)`,
-          description: original.description,
-          canvas_data: original.canvas_data,
-          node_count: original.node_count,
-        })
-        .select('id')
-        .single();
-
-      if (insertError) throw insertError;
+      const duplicated = await duplicateFlowData(flowId);
       return duplicated?.id || null;
     } catch (error) {
       console.error('Duplicate flow error:', error);
@@ -652,7 +604,6 @@ function reevaluateBlockedNodes(
   const updatedNodes = nodes.map((n) => {
     const data = n.data as FlowNodeData;
     if (data.status === 'blocked') {
-      // Check if dependencies are all completed
       const depsCompleted = data.dependencies.every((depId) => {
         const depNode = nodes.find((nd) => nd.id === depId);
         if (depNode) {

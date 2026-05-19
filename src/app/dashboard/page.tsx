@@ -4,7 +4,17 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/components/auth/AuthProvider';
-import { createClient } from '@/lib/supabase/client';
+import {
+  getAllFlows,
+  createFlow,
+  deleteFlowData,
+  duplicateFlowData,
+  renameFlow,
+  toggleFlowPin,
+  toggleFlowFavorite,
+  getStorageUsage,
+  FlowData,
+} from '@/lib/hybridStorage';
 import { DatabaseFlow } from '@/lib/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -43,69 +53,87 @@ import {
   FolderOpen,
   ArrowUpDown,
   LayoutGrid,
+  User,
+  HardDrive,
+  Cloud,
+  ArrowRight,
+  Shield,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useAppStore } from '@/lib/store';
+import { GuestMigrationDialog } from '@/components/auth/GuestMigrationDialog';
+import { SoftAuthPrompt } from '@/components/auth/SoftAuthPrompt';
 
 type SortOption = 'updated' | 'created' | 'title' | 'nodes';
 type ViewMode = 'grid' | 'list';
 
 export default function DashboardPage() {
-  const { user, signOut, loading: authLoading } = useAuth();
+  const { user, signOut, loading: authLoading, isGuest, enterGuestMode } = useAuth();
   const router = useRouter();
   const { theme, setTheme } = useTheme();
   const resetToEmpty = useAppStore((s) => s.resetToEmpty);
-  const createNewFlow = useAppStore((s) => s.createNewFlow);
 
-  const [flows, setFlows] = useState<DatabaseFlow[]>([]);
+  const [flows, setFlows] = useState<FlowData[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<SortOption>('updated');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
-  const [selectedFlow, setSelectedFlow] = useState<DatabaseFlow | null>(null);
+  const [selectedFlow, setSelectedFlow] = useState<FlowData | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [newFlowDialogOpen, setNewFlowDialogOpen] = useState(false);
   const [newFlowTitle, setNewFlowTitle] = useState('');
+  const [migrationDialogOpen, setMigrationDialogOpen] = useState(false);
+  const [storageUsage, setStorageUsage] = useState<{ flowCount: number; estimatedSizeKB: number }>({ flowCount: 0, estimatedSizeKB: 0 });
 
-  // Fetch flows
+  // Fetch flows (hybrid - local for guests, cloud for logged in)
   const fetchFlows = useCallback(async () => {
-    if (!user) return;
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from('flows')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('is_pinned', { ascending: false })
-      .order('updated_at', { ascending: false });
-
-    if (!error && data) {
-      setFlows(data as DatabaseFlow[]);
+    try {
+      const allFlows = await getAllFlows();
+      setFlows(allFlows);
+    } catch (err) {
+      console.error('Failed to fetch flows:', err);
+      setFlows([]);
     }
     setLoading(false);
-  }, [user]);
+  }, []);
 
   useEffect(() => {
-    if (user) {
+    // Allow both guests and logged-in users
+    if (!authLoading) {
       fetchFlows();
     }
-  }, [user, fetchFlows]);
+  }, [authLoading, user, fetchFlows]);
 
-  // Redirect if not authenticated
+  // Storage usage for guests
   useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/login');
+    if (isGuest || !user) {
+      getStorageUsage().then(setStorageUsage);
     }
-  }, [authLoading, user, router]);
+  }, [isGuest, user, flows]);
+
+  // Check for migration after login
+  useEffect(() => {
+    if (user && !authLoading && !isGuest) {
+      // Check if there are local flows to migrate
+      getStorageUsage().then((usage) => {
+        if (usage.flowCount > 0) {
+          setMigrationDialogOpen(true);
+        }
+      });
+    }
+  }, [user, authLoading, isGuest]);
 
   // Handle create new flow
   const handleCreateNew = async () => {
     const title = newFlowTitle.trim() || 'Untitled Flow';
-    const flowId = await createNewFlow(title);
-    if (flowId) {
+    try {
+      const flow = await createFlow(title);
       resetToEmpty();
-      router.push(`/flow/${flowId}`);
+      router.push(`/flow/${flow.id}`);
+    } catch (err) {
+      console.error('Create flow error:', err);
     }
     setNewFlowDialogOpen(false);
     setNewFlowTitle('');
@@ -118,9 +146,8 @@ export default function DashboardPage() {
 
   // Handle delete flow
   const handleDelete = async () => {
-    if (!selectedFlow || !user) return;
-    const supabase = createClient();
-    await supabase.from('flows').delete().eq('id', selectedFlow.id).eq('user_id', user.id);
+    if (!selectedFlow) return;
+    await deleteFlowData(selectedFlow.id);
     setFlows((prev) => prev.filter((f) => f.id !== selectedFlow.id));
     setDeleteDialogOpen(false);
     setSelectedFlow(null);
@@ -128,13 +155,8 @@ export default function DashboardPage() {
 
   // Handle rename flow
   const handleRename = async () => {
-    if (!selectedFlow || !user || !renameValue.trim()) return;
-    const supabase = createClient();
-    await supabase
-      .from('flows')
-      .update({ title: renameValue.trim() })
-      .eq('id', selectedFlow.id)
-      .eq('user_id', user.id);
+    if (!selectedFlow || !renameValue.trim()) return;
+    await renameFlow(selectedFlow.id, renameValue.trim());
     setFlows((prev) =>
       prev.map((f) => (f.id === selectedFlow.id ? { ...f, title: renameValue.trim() } : f))
     );
@@ -144,49 +166,24 @@ export default function DashboardPage() {
   };
 
   // Handle duplicate flow
-  const handleDuplicate = async (flow: DatabaseFlow) => {
-    if (!user) return;
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from('flows')
-      .insert({
-        user_id: user.id,
-        title: `${flow.title} (Copy)`,
-        description: flow.description,
-        canvas_data: flow.canvas_data,
-        node_count: flow.node_count,
-      })
-      .select()
-      .single();
-
-    if (!error && data) {
-      setFlows((prev) => [data as DatabaseFlow, ...prev]);
+  const handleDuplicate = async (flow: FlowData) => {
+    const duplicated = await duplicateFlowData(flow.id);
+    if (duplicated) {
+      setFlows((prev) => [duplicated, ...prev]);
     }
   };
 
   // Handle toggle pin
-  const handleTogglePin = async (flow: DatabaseFlow) => {
-    if (!user) return;
-    const supabase = createClient();
-    await supabase
-      .from('flows')
-      .update({ is_pinned: !flow.is_pinned })
-      .eq('id', flow.id)
-      .eq('user_id', user.id);
+  const handleTogglePin = async (flow: FlowData) => {
+    await toggleFlowPin(flow.id, flow.is_pinned);
     setFlows((prev) =>
       prev.map((f) => (f.id === flow.id ? { ...f, is_pinned: !f.is_pinned } : f))
     );
   };
 
   // Handle toggle favorite
-  const handleToggleFavorite = async (flow: DatabaseFlow) => {
-    if (!user) return;
-    const supabase = createClient();
-    await supabase
-      .from('flows')
-      .update({ is_favorite: !flow.is_favorite })
-      .eq('id', flow.id)
-      .eq('user_id', user.id);
+  const handleToggleFavorite = async (flow: FlowData) => {
+    await toggleFlowFavorite(flow.id, flow.is_favorite);
     setFlows((prev) =>
       prev.map((f) => (f.id === flow.id ? { ...f, is_favorite: !f.is_favorite } : f))
     );
@@ -199,7 +196,6 @@ export default function DashboardPage() {
       f.description?.toLowerCase().includes(search.toLowerCase())
     )
     .sort((a, b) => {
-      // Pinned first
       if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1;
       switch (sort) {
         case 'updated':
@@ -231,7 +227,7 @@ export default function DashboardPage() {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  if (authLoading || !user) {
+  if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950">
         <div className="flex items-center gap-3">
@@ -260,6 +256,18 @@ export default function DashboardPage() {
 
             {/* Right: Actions */}
             <div className="flex items-center gap-2">
+              {/* Guest Mode Badge */}
+              {isGuest && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200/60 dark:border-amber-800/40"
+                >
+                  <User className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                  <span className="text-[11px] font-medium text-amber-700 dark:text-amber-400">Guest</span>
+                </motion.div>
+              )}
+
               <Button
                 variant="ghost"
                 size="icon"
@@ -269,28 +277,48 @@ export default function DashboardPage() {
                 {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </Button>
 
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button className="flex items-center gap-2.5 h-9 pl-1.5 pr-3 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-                    <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-white text-[11px] font-bold">
-                      {user.email?.[0]?.toUpperCase() || 'U'}
-                    </div>
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300 max-w-[120px] truncate hidden sm:inline">
-                      {user.user_metadata?.name || user.email?.split('@')[0]}
-                    </span>
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-48">
-                  <DropdownMenuItem className="text-xs text-gray-500" disabled>
-                    {user.email}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={signOut} className="text-xs text-rose-600 dark:text-rose-400">
-                    <LogOut className="w-4 h-4 mr-2" />
-                    Sign out
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {user ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button className="flex items-center gap-2.5 h-9 pl-1.5 pr-3 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                      <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-white text-[11px] font-bold">
+                        {user.email?.[0]?.toUpperCase() || 'U'}
+                      </div>
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300 max-w-[120px] truncate hidden sm:inline">
+                        {user.user_metadata?.name || user.email?.split('@')[0]}
+                      </span>
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-48">
+                    <DropdownMenuItem className="text-xs text-gray-500" disabled>
+                      {user.email}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={signOut} className="text-xs text-rose-600 dark:text-rose-400">
+                      <LogOut className="w-4 h-4 mr-2" />
+                      Sign out
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => router.push('/login')}
+                    className="h-8 text-xs text-gray-600 dark:text-gray-400"
+                  >
+                    Sign in
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => router.push('/signup')}
+                    className="h-8 text-xs bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl"
+                  >
+                    Sign up free
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -299,13 +327,15 @@ export default function DashboardPage() {
       {/* ── Main Content ── */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Page Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-              Your Flows
+              {isGuest ? 'Guest Flows' : 'Your Flows'}
             </h1>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Create, manage, and present interactive demo workflows.
+              {isGuest
+                ? 'Flows are saved locally in this browser. Sign up to sync across devices.'
+                : 'Create, manage, and present interactive demo workflows.'}
             </p>
           </div>
           <Button
@@ -316,6 +346,25 @@ export default function DashboardPage() {
             New Flow
           </Button>
         </div>
+
+        {/* Guest Mode Info Banner */}
+        {isGuest && (
+          <SoftAuthPrompt variant="save" className="mb-6" />
+        )}
+
+        {/* Storage info for guests */}
+        {isGuest && storageUsage.flowCount > 0 && (
+          <div className="flex items-center gap-2 mb-4 text-xs text-gray-400 dark:text-gray-500">
+            <HardDrive className="w-3.5 h-3.5" />
+            <span>{storageUsage.flowCount} flow{storageUsage.flowCount !== 1 ? 's' : ''} stored locally</span>
+            {storageUsage.estimatedSizeKB > 0 && (
+              <span className="text-gray-300 dark:text-gray-600">·</span>
+            )}
+            {storageUsage.estimatedSizeKB > 0 && (
+              <span>{storageUsage.estimatedSizeKB > 1024 ? `${(storageUsage.estimatedSizeKB / 1024).toFixed(1)} MB` : `${storageUsage.estimatedSizeKB} KB`} used</span>
+            )}
+          </div>
+        )}
 
         {/* Search & Controls */}
         <div className="flex flex-col sm:flex-row gap-3 mb-6">
@@ -473,6 +522,12 @@ export default function DashboardPage() {
               }}
               autoFocus
             />
+            {isGuest && (
+              <p className="text-[11px] text-gray-400 mt-2 flex items-center gap-1">
+                <HardDrive className="w-3 h-3" />
+                Saved locally in your browser
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setNewFlowDialogOpen(false)} className="rounded-xl">
@@ -539,6 +594,15 @@ export default function DashboardPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Migration Dialog */}
+      <GuestMigrationDialog
+        open={migrationDialogOpen}
+        onOpenChange={setMigrationDialogOpen}
+        onMigrationComplete={() => {
+          fetchFlows();
+        }}
+      />
     </div>
   );
 }
@@ -557,14 +621,14 @@ function FlowCard({
   onToggleFavorite,
   formatDate,
 }: {
-  flow: DatabaseFlow;
+  flow: FlowData;
   index: number;
   onOpen: (id: string) => void;
-  onDuplicate: (flow: DatabaseFlow) => void;
-  onDelete: (flow: DatabaseFlow) => void;
-  onRename: (flow: DatabaseFlow) => void;
-  onTogglePin: (flow: DatabaseFlow) => void;
-  onToggleFavorite: (flow: DatabaseFlow) => void;
+  onDuplicate: (flow: FlowData) => void;
+  onDelete: (flow: FlowData) => void;
+  onRename: (flow: FlowData) => void;
+  onTogglePin: (flow: FlowData) => void;
+  onToggleFavorite: (flow: FlowData) => void;
   formatDate: (date: string) => string;
 }) {
   const nodeCount = flow.node_count || (flow.canvas_data?.nodes?.length ?? 0);
@@ -607,9 +671,18 @@ function FlowCard({
           )}
         </div>
 
+        {/* Storage badge */}
+        {flow.isLocal && (
+          <div className="absolute top-2 left-2">
+            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-blue-500/10 border border-blue-500/20 text-[9px] font-semibold text-blue-600 dark:text-blue-400 uppercase">
+              <HardDrive className="w-2.5 h-2.5" /> Local
+            </span>
+          </div>
+        )}
+
         {/* Pin indicator */}
         {flow.is_pinned && (
-          <div className="absolute top-2 left-2">
+          <div className={`absolute top-2 ${flow.isLocal ? 'left-16' : 'left-2'}`}>
             <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 uppercase">
               <Pin className="w-2.5 h-2.5" /> Pinned
             </span>
@@ -678,6 +751,11 @@ function FlowCard({
             <Clock className="w-3 h-3" />
             {formatDate(flow.updated_at)}
           </span>
+          {flow.isLocal && (
+            <span className="flex items-center gap-0.5 text-blue-400 dark:text-blue-500">
+              <HardDrive className="w-2.5 h-2.5" />
+            </span>
+          )}
         </div>
       </div>
     </motion.div>
@@ -698,14 +776,14 @@ function FlowListItem({
   onToggleFavorite,
   formatDate,
 }: {
-  flow: DatabaseFlow;
+  flow: FlowData;
   index: number;
   onOpen: (id: string) => void;
-  onDuplicate: (flow: DatabaseFlow) => void;
-  onDelete: (flow: DatabaseFlow) => void;
-  onRename: (flow: DatabaseFlow) => void;
-  onTogglePin: (flow: DatabaseFlow) => void;
-  onToggleFavorite: (flow: DatabaseFlow) => void;
+  onDuplicate: (flow: FlowData) => void;
+  onDelete: (flow: FlowData) => void;
+  onRename: (flow: FlowData) => void;
+  onTogglePin: (flow: FlowData) => void;
+  onToggleFavorite: (flow: FlowData) => void;
   formatDate: (date: string) => string;
 }) {
   const nodeCount = flow.node_count || (flow.canvas_data?.nodes?.length ?? 0);
@@ -742,6 +820,7 @@ function FlowListItem({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           {flow.is_pinned && <Pin className="w-3 h-3 text-emerald-500 flex-shrink-0" />}
+          {flow.isLocal && <HardDrive className="w-3 h-3 text-blue-400 flex-shrink-0" />}
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
             {flow.title}
           </h3>
@@ -749,6 +828,7 @@ function FlowListItem({
         <div className="flex items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
           <span>{nodeCount} nodes</span>
           <span>{formatDate(flow.updated_at)}</span>
+          {flow.isLocal && <span className="text-blue-400">Local</span>}
         </div>
       </div>
 
